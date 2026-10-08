@@ -111,7 +111,7 @@ pi loads the extension's TypeScript directly. The writer runs as a separate Node
 ## Commands
 
 - `/memory status` shows the memory and state directories, whether `user.md` exists, how many topics each scope has, the last writer run with its outcome, and the runner, including whether `pueue` is on `PATH`. `/memory` on its own does the same.
-- `/memory explain` shows which topics were listed in this session and why, and which topics were named in reminders and what triggered each one: the tool call and path, or the word in your prompt.
+- `/memory explain` shows which topics pi currently lists and why (pi refreshes that listing at startup and on `/reload`, not on `/new` or `/resume`, so it can still reflect the directory pi started in), and which topics were named in reminders and what triggered each one: the tool call and path, or the word in your prompt.
 - `/memory write` queues the writer for the current session now, even when the session has fewer than `minUserMessages` user messages or a variable in `skipWriteWhenEnv` is set. Quitting afterwards does not queue the same session again unless you have continued it.
 
 ## License

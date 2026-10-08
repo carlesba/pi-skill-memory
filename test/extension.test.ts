@@ -165,6 +165,28 @@ test("resources_discover lists generic topics plus the cwd repo's topics and rec
   assert.deepEqual(generic.skillPaths, [topicSkillPath(fixture.dir, "mem-any-react-components")]);
 });
 
+test("/memory explain keeps reporting pi's listing after /new and /resume", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  await h.fire("resources_discover", { cwd: "/work/apollo", reason: "startup" });
+  for (const reason of ["new", "resume", "fork"]) {
+    await h.fire("session_shutdown", { reason });
+    h.session.id = `sess-${reason}`;
+    await h.fire("session_start", { reason }, h.ctx("/work/billing"));
+    const explain = await h.command("explain", h.ctx("/work/billing"));
+    assert.match(explain, /mem-any-react-components: generic topic/, reason);
+    assert.match(explain, /mem-apollo-state: scoped to preply\/apollo, the repository containing \/work\/apollo/, reason);
+    assert.doesNotMatch(explain, /mem-billing-db/, reason);
+  }
+  await h.fire("session_shutdown", { reason: "reload" });
+  await h.fire("session_start", { reason: "reload" }, h.ctx("/work/billing"));
+  await h.fire("resources_discover", { cwd: "/work/billing", reason: "reload" }, h.ctx("/work/billing"));
+  const reloaded = await h.command("explain", h.ctx("/work/billing"));
+  assert.match(reloaded, /mem-billing-db: scoped to acme\/billing/);
+  assert.doesNotMatch(reloaded, /mem-apollo-state/);
+});
+
 test("first-touch reminder fires once per repo per session and again after compaction", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
   const h = harness(fixture);

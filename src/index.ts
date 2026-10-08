@@ -51,7 +51,6 @@ interface SessionState {
   topics: TopicSummary[];
   announced: Set<string>;
   pending: Map<string, string[]>;
-  listed: ListedTopic[];
   reminders: ReminderRecord[];
   loaded: Set<string>;
   manualWriteLeaf: string | null | undefined;
@@ -99,6 +98,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       which,
     };
     let state: SessionState | null = null;
+    let listed: ListedTopic[] = [];
 
     function startSession(ctx: SessionView): SessionState {
       const config = resolveConfig(pi.getSettings(), { env: deps.env, home: deps.home });
@@ -109,7 +109,6 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         topics: listTopics(config.dir),
         announced: new Set(),
         pending: new Map(),
-        listed: [],
         reminders: [],
         loaded: new Set(),
         manualWriteLeaf: undefined,
@@ -170,16 +169,16 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         session.topics = listTopics(session.config.dir);
         const cwd = resolve(event.cwd);
         const identity = deps.resolver.resolvePath(cwd)?.identity ?? null;
-        const listed = topicsForRepo(session.topics, identity);
-        session.listed = listed.map((topic) => ({
+        const discovered = topicsForRepo(session.topics, identity);
+        listed = discovered.map((topic) => ({
           name: topic.name,
           reason:
             topic.scope === "generic"
               ? "generic topic, listed in every repository"
               : `scoped to ${identity}, the repository containing ${cwd}`,
         }));
-        if (listed.length === 0) return undefined;
-        return { skillPaths: listed.map((topic) => topic.path) };
+        if (discovered.length === 0) return undefined;
+        return { skillPaths: discovered.map((topic) => topic.path) };
       } catch (error) {
         logFailure("resources_discover", error);
         return undefined;
@@ -310,7 +309,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         try {
           const session = current(ctx);
           if (subcommand === "status") runStatus(session, ctx);
-          else if (subcommand === "explain") notify(ctx, formatExplain(session.listed, session.reminders));
+          else if (subcommand === "explain") notify(ctx, formatExplain(listed, session.reminders));
           else if (subcommand === "write") runWrite(session, ctx);
           else notify(ctx, `Unknown subcommand "${subcommand}". Use /memory status, /memory explain or /memory write.`, "warning");
         } catch (error) {
