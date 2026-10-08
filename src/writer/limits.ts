@@ -6,3 +6,7 @@ export const MAX_DESCRIPTION_CHARS = 300;
 export const MAX_REMOVED_WHY_CHARS = 300;
 export const MAX_SPLIT_CHARS = 300;
 export const MAX_EXTRACT_PROMPT_CHARS = 60_000;
+export const MAX_INDEX_DESCRIPTION_CHARS = 200;
+export const MAX_SKILL_INDEX_CHARS = 12_000;
+export const MAX_TOPIC_INDEX_CHARS = 8_000;
+export const MIN_TRANSCRIPT_CHARS = 20_000;

@@ -8,8 +8,12 @@ import {
   MAX_DESCRIPTION_CHARS,
   MAX_EVIDENCE_WORDS,
   MAX_EXTRACT_PROMPT_CHARS,
+  MAX_INDEX_DESCRIPTION_CHARS,
   MAX_RULE_CHARS,
+  MAX_SKILL_INDEX_CHARS,
+  MAX_TOPIC_INDEX_CHARS,
   MAX_WHY_CHARS,
+  MIN_TRANSCRIPT_CHARS,
 } from "./limits.ts";
 import { truncateText, type SessionTurn } from "./session.ts";
 
@@ -30,6 +34,30 @@ export function fillTemplate(template: string, values: Record<string, string | n
 
 function listOrNone(lines: string[]): string {
   return lines.length === 0 ? "(none)" : lines.join("\n");
+}
+
+function omittedLine(count: number): string {
+  return `(${count} more omitted)`;
+}
+
+export function boundIndex(lines: string[], maxChars: number): string {
+  if (lines.length === 0) return "(none)";
+  const kept: string[] = [];
+  let size = 0;
+  for (const [index, line] of lines.entries()) {
+    const remaining = lines.length - index - 1;
+    const reserve = remaining > 0 ? omittedLine(remaining).length + 1 : 0;
+    const added = (kept.length > 0 ? 1 : 0) + line.length;
+    if (size + added + reserve > maxChars) break;
+    kept.push(line);
+    size += added;
+  }
+  const omitted = lines.length - kept.length;
+  return omitted === 0 ? kept.join("\n") : [...kept, omittedLine(omitted)].join("\n");
+}
+
+function indexDescription(description: string): string {
+  return truncateText(description, MAX_INDEX_DESCRIPTION_CHARS);
 }
 
 export interface TopicIndexEntry {
@@ -103,12 +131,18 @@ export function buildExtractPrompt(
     maxEvidenceWords: MAX_EVIDENCE_WORDS,
     repos: listOrNone(input.repos.map((repo) => `- ${repo}`)),
     userMemory: input.userMemory.trim() === "" ? "(empty)" : input.userMemory.trim(),
-    topicIndex: listOrNone(input.topics.map((topic) => `- ${topic.name} (${topic.scope}): ${topic.description}`)),
-    skillIndex: listOrNone(input.skills.map((skill) => `- ${skill.name}: ${skill.description}`)),
+    topicIndex: boundIndex(
+      input.topics.map((topic) => `- ${topic.name} (${topic.scope}): ${indexDescription(topic.description)}`),
+      MAX_TOPIC_INDEX_CHARS,
+    ),
+    skillIndex: boundIndex(
+      input.skills.map((skill) => `- ${skill.name}: ${indexDescription(skill.description)}`),
+      MAX_SKILL_INDEX_CHARS,
+    ),
     loadedTopics: renderLoadedTopics(input.loadedTopics),
   };
   const overhead = fillTemplate(template, { ...values, transcript: "" }).length;
-  const turns = boundTurns(input.turns, Math.max(0, maxChars - overhead));
+  const turns = boundTurns(input.turns, Math.max(Math.min(MIN_TRANSCRIPT_CHARS, maxChars), maxChars - overhead));
   return fillTemplate(template, { ...values, transcript: renderTranscript(turns) });
 }
 

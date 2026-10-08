@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import {
+  boundIndex,
   boundTurns,
   buildExtractPrompt,
   buildMergePrompt,
@@ -62,4 +63,49 @@ test("bounds the transcript by dropping oldest assistant texts, then truncating 
     "head {maxCandidates}{maxRuleChars}{maxWhyChars}{maxEvidenceWords}{repos}{userMemory}{topicIndex}{skillIndex}{loadedTopics}{transcript}",
   );
   assert.ok(prompt.length <= 60_000);
+});
+
+test("a huge skill and topic index still leaves the user messages in the extract prompt", () => {
+  const skills = Array.from({ length: 300 }, (_, index) => ({
+    name: `skill-${index}`,
+    description: `Skill ${index} ${"d".repeat(1000)}`,
+    path: `/skills/${index}`,
+  }));
+  const topics = Array.from({ length: 200 }, (_, index) => ({
+    name: `mem-any-topic-${index}`,
+    description: `Topic ${index} ${"t".repeat(300)}`,
+    scope: "generic" as const,
+  }));
+  const turns = Array.from({ length: 12 }, (_, index) => ({ user: `user message ${index} ${"u".repeat(1900)}`, assistant: "a".repeat(1400) }));
+  const prompt = buildExtractPrompt({ repos: ["acme/app"], userMemory: "Be terse.", topics, skills, loadedTopics: [], turns });
+  assert.ok(prompt.length <= 60_000, `prompt is ${prompt.length} chars`);
+  for (let index = 0; index < turns.length; index++) assert.match(prompt, new RegExp(`user message ${index} u`));
+  assert.match(prompt, /- skill-0: Skill 0 d+…\n/);
+  assert.doesNotMatch(prompt, /d{200}/);
+  assert.match(prompt, /\(\d+ more omitted\)/);
+  assert.match(prompt, /- mem-any-topic-0 \(generic\): Topic 0 t+…\n/);
+});
+
+test("index sections keep whole entries within their cap and count what they drop", () => {
+  const lines = ["- a: one", "- b: two", "- c: three", "- d: four"];
+  assert.equal(boundIndex([], 100), "(none)");
+  assert.equal(boundIndex(lines, 1000), lines.join("\n"));
+  const bounded = boundIndex(lines, 40);
+  assert.ok(bounded.length <= 40);
+  assert.equal(bounded, "- a: one\n- b: two\n(2 more omitted)");
+});
+
+test("the transcript keeps a floor of 20 000 chars when loaded topics fill the budget", () => {
+  const loadedTopics = Array.from({ length: 12 }, (_, index) => ({
+    name: `mem-any-loaded-${index}`,
+    description: "When loading.",
+    scope: "generic" as const,
+    memories: [{ id: `r${index + 1}`, text: "m".repeat(4000) }],
+  }));
+  const turns = Array.from({ length: 15 }, (_, index) => ({ user: `user message ${index} ${"u".repeat(1900)}`, assistant: null }));
+  const prompt = buildExtractPrompt({ repos: [], userMemory: "", topics: [], skills: [], loadedTopics, turns });
+  const transcript = prompt.slice(prompt.indexOf("### User message 1"));
+  assert.ok(transcript.length >= 19_000, `transcript is ${transcript.length} chars`);
+  assert.ok(transcript.length <= 20_000 + 2000);
+  assert.match(prompt, /user message 14 u/);
 });
