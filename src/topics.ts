@@ -185,9 +185,13 @@ export function scopeSlug(scope: Scope, existing: { name: string; scope: Scope }
   return takenByOther ? long : short;
 }
 
-export function mintTopicName(scope: Scope, topic: string, existing: { name: string; scope: Scope }[]): string {
+export function topicBaseName(scope: Scope, topic: string, existing: { name: string; scope: Scope }[]): string {
   const topicSlug = slugify(topic) || "notes";
-  const base = capSlug(`mem-${scopeSlug(scope, existing)}-${topicSlug}`, MAX_SKILL_NAME_LENGTH);
+  return capSlug(`mem-${scopeSlug(scope, existing)}-${topicSlug}`, MAX_SKILL_NAME_LENGTH);
+}
+
+export function mintTopicName(scope: Scope, topic: string, existing: { name: string; scope: Scope }[]): string {
+  const base = topicBaseName(scope, topic, existing);
   const taken = new Set(existing.map((entry) => entry.name));
   if (!taken.has(base)) return base;
   for (let suffix = 2; ; suffix++) {
