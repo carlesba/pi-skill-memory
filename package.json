@@ -27,7 +27,7 @@
   },
   "scripts": {
     "typecheck": "tsc",
-    "test": "node --test test/"
+    "test": "node --test \"test/**/*.test.ts\""
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"
