@@ -65,6 +65,11 @@ export function memoryIds(body: string): string[] {
     .filter((id): id is string => id !== null && id !== "new");
 }
 
+export function withoutMemories(memories: Memory[], ids: Iterable<string>): Memory[] {
+  const removed = new Set(ids);
+  return memories.filter((memory) => memory.id === null || !removed.has(memory.id));
+}
+
 export function parseTopic(raw: string): TopicFile | null {
   const parsed = parseFrontmatter(raw);
   if (!parsed) return null;
