@@ -1,0 +1,40 @@
+{
+  "name": "pi-skill-memory",
+  "version": "0.1.0",
+  "description": "Long-term memory for pi, written as skills.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Carles Ballester",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "memory",
+    "skills"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "files": [
+    "src",
+    "prompts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test test/"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.1.0",
+    "@types/node": "^24.19.1",
+    "typescript": "^5.9.3"
+  }
+}
