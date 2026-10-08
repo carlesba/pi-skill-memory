@@ -173,6 +173,7 @@ function checkBodyShape(body: string, maxChars: number): void {
 
 export interface MergeContext {
   knownIds: ReadonlySet<string>;
+  existingIds: readonly string[];
   maxCharsPerTopic: number;
 }
 
@@ -198,17 +199,24 @@ export function validateMerge(value: unknown, context: MergeContext): Validated<
     if (split !== undefined && split !== null && typeof split !== "string") reject("split must be a string or null");
     const splitText = typeof split === "string" && split.trim() !== "" ? split.trim() : null;
     if (splitText !== null && splitText.length > MAX_SPLIT_CHARS) reject(`split is longer than ${MAX_SPLIT_CHARS} chars`);
-    return { description, memories, removed: parseRemoved(value.removed), split: splitText };
+    const removed = parseRemoved(value.removed);
+    const accounted = new Set(removed.map((entry) => entry.id));
+    const unaccounted = context.existingIds.filter((id) => !seen.has(id) && !accounted.has(id));
+    if (unaccounted.length > 0) {
+      reject(`memories dropped without a removed entry: ${unaccounted.map((id) => `^${id}`).join(", ")}`);
+    }
+    return { description, memories, removed, split: splitText };
   });
 }
 
-export function validateUserMerge(value: unknown, maxUserChars: number): Validated<UserMergeResult> {
+export function validateUserMerge(value: unknown, maxUserChars: number, currentUserMemory: string): Validated<UserMergeResult> {
   return runValidation(() => {
     if (!isRecord(value)) reject("user.md output must be an object");
     if (typeof value.body !== "string") reject("body must be a string");
     const body = value.body.trim();
     checkBodyShape(body, maxUserChars);
     if (ID_MARKER.test(body)) reject("user.md must not hold memory ids");
+    if (body === "" && currentUserMemory.trim() !== "") reject("body is empty but user.md is not");
     return { body, removed: parseRemoved(value.removed) };
   });
 }

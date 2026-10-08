@@ -207,6 +207,29 @@ test("a rejected pass 2 leaves the topic untouched and the run records it", asyn
   assert.equal(result.committed, false);
 });
 
+test("a pass 2 or user.md answer that silently drops memories is rejected and changes nothing", async () => {
+  const fixture = setup({ staleTopicDays: 100000 });
+  const userPath = join(fixture.dir, "user.md");
+  writeFileSync(userPath, "Be terse.\n");
+  const before = readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8");
+  const { model } = scriptedModel({
+    extract: {
+      candidates: [
+        { rule: "Use node:test.", why: "Zero deps.", evidence: "use node:test", scope: "generic", target: "mem-any-testing" },
+        { rule: "Never add vitest.", why: "Zero dev deps.", evidence: "never vitest, in every repo", scope: "generic", target: "user.md" },
+      ],
+      votes: [],
+    },
+    merges: { "mem-any-testing": { description: "When testing.", body: "", removed: [{ id: "r1", why: "outdated" }], split: null } },
+    user: { body: "", removed: [] },
+  });
+  const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.match(result.rejected.join("\n"), /mem-any-testing: memories dropped without a removed entry: \^r2/);
+  assert.match(result.rejected.join("\n"), /user\.md: body is empty but user\.md is not/);
+  assert.equal(readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8"), before);
+  assert.equal(readFileSync(userPath, "utf8"), "Be terse.\n");
+});
+
 test("a failed run keeps its job file so a queue can retry it", async () => {
   const fixture = setup();
   const jobFile = writeJob(job(fixture));

@@ -387,6 +387,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     try {
       result = validateMerge(extractJson(await deps.model(prompt)), {
         knownIds: new Set(Object.keys(topic.ledger.memories)),
+        existingIds: memoryIds(serializeMemories(topic.memories)),
         maxCharsPerTopic: config.maxCharsPerTopic,
       });
     } catch (error) {
@@ -433,7 +434,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
         { userMemory, candidates: userCandidates, maxUserChars: config.maxUserChars },
         loadPrompt("merge-user", packageRoot),
       );
-      result = validateUserMerge(extractJson(await deps.model(prompt)), config.maxUserChars);
+      result = validateUserMerge(extractJson(await deps.model(prompt)), config.maxUserChars, userMemory);
     } catch (error) {
       result = { ok: false, error: errorMessage(error) };
     }
