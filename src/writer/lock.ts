@@ -1,17 +1,32 @@
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  ftruncateSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export const LOCK_FILE = ".writer.lock";
 export const LOCK_POLL_MS = 500;
 export const LOCK_TIMEOUT_MS = 30 * 60_000;
-export const LOCK_STALE_MS = 30 * 60_000;
+export const LOCK_STALE_MS = 5 * 60_000;
+export const LOCK_HEARTBEAT_MS = 60_000;
 const UNREADABLE_GRACE_MS = 5_000;
 
 export interface LockOptions {
   pollMs?: number;
   timeoutMs?: number;
   staleMs?: number;
+  heartbeatMs?: number;
+  schedule?: (refresh: () => void, ms: number) => () => void;
   pid?: number;
   now?: () => number;
   isAlive?: (pid: number) => boolean;
@@ -66,8 +81,8 @@ function isStale(path: string, raw: string, now: number, staleMs: number, isAliv
       return false;
     }
   }
-  const created = Date.parse(lock.ts);
-  return !isAlive(lock.pid) || Number.isNaN(created) || now - created > staleMs;
+  const refreshed = Date.parse(lock.ts);
+  return !isAlive(lock.pid) || Number.isNaN(refreshed) || now - refreshed > staleMs;
 }
 
 function reclaim(path: string, judged: string, token: string): void {
@@ -88,10 +103,37 @@ function reclaim(path: string, judged: string, token: string): void {
   rmSync(aside, { force: true });
 }
 
+function scheduleInterval(refresh: () => void, ms: number): () => void {
+  const timer = setInterval(refresh, ms);
+  timer.unref();
+  return () => clearInterval(timer);
+}
+
+function refreshLock(path: string, content: LockContent): void {
+  const current = readText(path);
+  if (current === null || parseLock(current)?.token !== content.token) return;
+  let fd: number;
+  try {
+    fd = openSync(path, "r+");
+  } catch {
+    return;
+  }
+  try {
+    const bytes = writeSync(fd, JSON.stringify(content), 0);
+    ftruncateSync(fd, bytes);
+  } catch {
+    return;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export async function acquireLock(dir: string, options: LockOptions = {}): Promise<() => void> {
   const pollMs = options.pollMs ?? LOCK_POLL_MS;
   const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS;
   const staleMs = options.staleMs ?? LOCK_STALE_MS;
+  const heartbeatMs = options.heartbeatMs ?? LOCK_HEARTBEAT_MS;
+  const schedule = options.schedule ?? scheduleInterval;
   const pid = options.pid ?? process.pid;
   const now = options.now ?? Date.now;
   const isAlive = options.isAlive ?? processAlive;
@@ -103,7 +145,12 @@ export async function acquireLock(dir: string, options: LockOptions = {}): Promi
   for (;;) {
     try {
       writeFileSync(path, JSON.stringify({ pid, ts: new Date(now()).toISOString(), token }), { flag: "wx" });
+      const stopHeartbeat = schedule(
+        () => refreshLock(path, { pid, ts: new Date(now()).toISOString(), token }),
+        heartbeatMs,
+      );
       return () => {
+        stopHeartbeat();
         const current = readText(path);
         if (current !== null && parseLock(current)?.token === token) rmSync(path, { force: true });
       };

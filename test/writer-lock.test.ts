@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { acquireLock, lockPath, LockTimeoutError, withLock } from "../src/writer/lock.ts";
+import { acquireLock, LOCK_HEARTBEAT_MS, LOCK_STALE_MS, lockPath, LockTimeoutError, withLock } from "../src/writer/lock.ts";
 
 const fast = { pollMs: 5 };
 
@@ -52,6 +52,55 @@ test("reclaims a lock held by a dead pid or older than the stale age", async () 
   const past = new Date(Date.now() - 60_000);
   utimesSync(lockPath(dir), past, past);
   (await acquireLock(dir, { ...fast, timeoutMs: 50 }))();
+});
+
+test("the holder refreshes its lock, so a live writer keeps it however long it runs", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "psm-lock-"));
+  let clock = Date.parse("2025-06-01T00:00:00Z");
+  const now = () => clock;
+  const refreshes: (() => void)[] = [];
+  let stopped = 0;
+  const schedule = (refresh: () => void, ms: number) => {
+    assert.equal(ms, LOCK_HEARTBEAT_MS);
+    refreshes.push(refresh);
+    return () => {
+      stopped++;
+    };
+  };
+  const alive = new Set([1001, 1002]);
+  const isAlive = (pid: number) => alive.has(pid);
+  const holder = { ...fast, now, isAlive, schedule, pid: 1001 };
+  const waiter = { ...fast, now, isAlive, timeoutMs: 0, pid: 1002, schedule: () => () => undefined };
+  const release = await acquireLock(dir, holder);
+  assert.equal(refreshes.length, 1);
+  const owner = () => JSON.parse(readFileSync(lockPath(dir), "utf8")) as { pid: number; ts: string };
+  for (let minute = 0; minute < 40; minute++) {
+    clock += LOCK_HEARTBEAT_MS;
+    refreshes[0]!();
+    assert.equal(owner().ts, new Date(clock).toISOString());
+  }
+  clock += LOCK_STALE_MS - 1000;
+  await assert.rejects(acquireLock(dir, waiter), LockTimeoutError);
+  assert.equal(owner().pid, 1001);
+  clock += 2000;
+  const taken = await acquireLock(dir, waiter);
+  assert.equal(owner().pid, 1002);
+  refreshes[0]!();
+  assert.equal(owner().pid, 1002);
+  release();
+  assert.equal(stopped, 1);
+  assert.equal(owner().pid, 1002);
+  taken();
+  assert.equal(existsSync(lockPath(dir)), false);
+});
+
+test("a fresh lock whose pid is dead is stale", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "psm-lock-"));
+  const clock = Date.parse("2025-06-01T00:00:00Z");
+  writeFileSync(lockPath(dir), JSON.stringify({ pid: 1001, ts: new Date(clock).toISOString(), token: "dead" }));
+  const release = await acquireLock(dir, { ...fast, now: () => clock, isAlive: () => false, timeoutMs: 0, pid: 1002 });
+  assert.equal(JSON.parse(readFileSync(lockPath(dir), "utf8")).pid, 1002);
+  release();
 });
 
 test("waits for a live lock and times out", async () => {
