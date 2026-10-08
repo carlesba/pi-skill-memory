@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { resolveConfig } from "../src/config.ts";
-import { enqueueWriter, shellQuote, type Exec, type ExecResult } from "../src/writer/enqueue.ts";
+import { enqueueWriter, shellQuote, writerCommand, type Exec, type ExecResult } from "../src/writer/enqueue.ts";
 import { loadJob, type WriterJob } from "../src/writer/job.ts";
 import type { SpawnFunction } from "../src/writer/model.ts";
 
@@ -113,4 +113,10 @@ test("the detached runner never consults pueue", () => {
   assert.equal(result.runner, "detached");
   assert.equal(asked, false);
   assert.equal(calls.length, 1);
+});
+
+test("the writer command runs the compiled entry point when dist exists and the TypeScript source otherwise", () => {
+  const compiled = "/pkg/dist/writer/main.js";
+  assert.deepEqual(writerCommand("/pkg", "/jobs/a.json", (path) => path === compiled), [process.execPath, compiled, "/jobs/a.json"]);
+  assert.deepEqual(writerCommand("/pkg", "/jobs/a.json", () => false), [process.execPath, "/pkg/src/writer/main.ts", "/jobs/a.json"]);
 });

@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn, spawnSync } from "node:child_process";
-import { accessSync, closeSync, constants, mkdirSync, openSync } from "node:fs";
+import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { RunnerKind } from "../config.ts";
 import { writeJob, type WriterJob } from "./job.ts";
@@ -47,12 +47,17 @@ export const execCommand: Exec = (command, args) => {
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? String(result.error ?? "") };
 };
 
-export function writerMainPath(packageRoot: string = PACKAGE_ROOT): string {
-  return join(packageRoot, "src", "writer", "main.ts");
+export function writerMainPath(packageRoot: string = PACKAGE_ROOT, exists: (path: string) => boolean = existsSync): string {
+  const compiled = join(packageRoot, "dist", "writer", "main.js");
+  return exists(compiled) ? compiled : join(packageRoot, "src", "writer", "main.ts");
 }
 
-export function writerCommand(packageRoot: string, jobFile: string): string[] {
-  return [process.execPath, writerMainPath(packageRoot || PACKAGE_ROOT), jobFile];
+export function writerCommand(
+  packageRoot: string,
+  jobFile: string,
+  exists: (path: string) => boolean = existsSync,
+): string[] {
+  return [process.execPath, writerMainPath(packageRoot || PACKAGE_ROOT, exists), jobFile];
 }
 
 export function shellQuote(value: string): string {
