@@ -15,6 +15,7 @@ import {
   saveLedger,
   sweepLedger,
 } from "../src/ledger.ts";
+import { isStaleTopic, topicWeight } from "../src/weights.ts";
 import { memoryIds, parseMemories, serializeMemories, withoutMemories } from "../src/topics.ts";
 
 const now = new Date("2025-06-01T12:00:00Z");
@@ -56,6 +57,38 @@ test("records votes keeping the last 20 and retracts by deleting the entry", () 
   assert.equal(serializeMemories(memories), "B ^r2");
   for (let index = 0; index < MAX_VOTES + 1; index++) recordTopicVote(ledger, "loaded", now.toISOString());
   assert.equal(ledger.topic.votes.length, MAX_VOTES);
+});
+
+test("reminded votes never push loaded votes out of the topic window", () => {
+  const ledger = emptyLedger(new Date(now.getTime() - 200 * 86_400_000).toISOString());
+  const loadedAt = new Date(now.getTime() - 5 * 86_400_000);
+  recordTopicVote(ledger, "loaded", loadedAt.toISOString());
+  for (let index = 0; index < 30; index++) {
+    recordTopicVote(ledger, "reminded", new Date(loadedAt.getTime() + (index + 1) * 60_000).toISOString());
+  }
+  const kinds = (votes: { kind: string }[], kind: string) => votes.filter((vote) => vote.kind === kind).length;
+  assert.equal(kinds(ledger.topic.votes, "loaded"), 1);
+  assert.equal(kinds(ledger.topic.votes, "reminded"), MAX_VOTES);
+  assert.equal(isStaleTopic(ledger, now, 60), false);
+  assert.ok(topicWeight(ledger, now, 90) > 0.9);
+  for (let index = 0; index < 25; index++) recordTopicVote(ledger, "loaded", now.toISOString());
+  assert.equal(kinds(ledger.topic.votes, "loaded"), MAX_VOTES);
+  assert.equal(kinds(ledger.topic.votes, "reminded"), MAX_VOTES);
+  const reloaded = parseLedger(JSON.stringify(ledger));
+  assert.deepEqual(reloaded.topic.votes, ledger.topic.votes);
+  const crowded = parseLedger(
+    JSON.stringify({
+      topic: {
+        votes: [
+          { kind: "loaded", ts: loadedAt.toISOString() },
+          ...Array.from({ length: 30 }, () => ({ kind: "reminded", ts: now.toISOString() })),
+        ],
+      },
+    }),
+  );
+  assert.equal(kinds(crowded.topic.votes, "loaded"), 1);
+  assert.equal(kinds(crowded.topic.votes, "reminded"), MAX_VOTES);
+  assert.equal(isStaleTopic({ ...crowded, topic: { ...crowded.topic, created: ledger.topic.created } }, now, 60), false);
 });
 
 test("saves and loads ledgers, tolerating missing or malformed files", () => {

@@ -39,14 +39,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function readVotes<K extends string>(value: unknown, kinds: readonly K[]): Vote<K>[] {
+  return readVotesUncapped(value, kinds).slice(-MAX_VOTES);
+}
+
+function readVotesUncapped<K extends string>(value: unknown, kinds: readonly K[]): Vote<K>[] {
   if (!Array.isArray(value)) return [];
   return value
     .filter(
       (vote): vote is Vote<K> =>
         isRecord(vote) && typeof vote.ts === "string" && kinds.includes(vote.kind as K),
     )
-    .map((vote) => ({ kind: vote.kind, ts: vote.ts }))
-    .slice(-MAX_VOTES);
+    .map((vote) => ({ kind: vote.kind, ts: vote.ts }));
+}
+
+function readTopicVotes(value: unknown): Vote<TopicVoteKind>[] {
+  const votes: Vote<TopicVoteKind>[] = [];
+  for (const vote of readVotesUncapped(value, TOPIC_VOTE_KINDS)) pushTopicVote(votes, vote);
+  return votes;
 }
 
 export function memoryIdNumber(id: string): number | null {
@@ -79,7 +88,7 @@ export function parseLedger(raw: string): Ledger {
   }
   const topicData = isRecord(data.topic) ? data.topic : {};
   const declaredNext = typeof data.nextId === "number" && Number.isInteger(data.nextId) ? data.nextId : 1;
-  const topic: Ledger["topic"] = { votes: readVotes(topicData.votes, TOPIC_VOTE_KINDS) };
+  const topic: Ledger["topic"] = { votes: readTopicVotes(topicData.votes) };
   if (typeof topicData.created === "string") topic.created = topicData.created;
   return { nextId: Math.max(declaredNext, highest + 1, 1), topic, memories };
 }
@@ -133,8 +142,15 @@ export function recordVote(ledger: Ledger, id: string, kind: MemoryVoteKind, now
   return "recorded";
 }
 
+function pushTopicVote(votes: Vote<TopicVoteKind>[], vote: Vote<TopicVoteKind>): void {
+  votes.push(vote);
+  const sameKind = votes.filter((existing) => existing.kind === vote.kind).length;
+  if (sameKind <= MAX_VOTES) return;
+  votes.splice(votes.findIndex((existing) => existing.kind === vote.kind), 1);
+}
+
 export function recordTopicVote(ledger: Ledger, kind: TopicVoteKind, ts: string): void {
-  pushVote(ledger.topic.votes, { kind, ts });
+  pushTopicVote(ledger.topic.votes, { kind, ts });
 }
 
 export function sweepLedger(ledger: Ledger, bodyIds: Iterable<string>): string[] {
