@@ -35,7 +35,7 @@ export async function runJob(jobFile: string, deps: RunJobDeps = {}): Promise<Ru
   }
   log(`writer finished: ${record.outcome}${record.error ? ` (${record.error})` : ""}`);
   appendRun(stateDir, record);
-  rmSync(jobFile, { force: true });
+  if (record.outcome !== "failed") rmSync(jobFile, { force: true });
   return record;
 }
 

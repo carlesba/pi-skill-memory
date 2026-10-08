@@ -207,6 +207,16 @@ test("a rejected pass 2 leaves the topic untouched and the run records it", asyn
   assert.equal(result.committed, false);
 });
 
+test("a failed run keeps its job file so a queue can retry it", async () => {
+  const fixture = setup();
+  const jobFile = writeJob(job(fixture));
+  const model: ModelRunner = async () => "not json";
+  const record = await runJob(jobFile, { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.equal(record.outcome, "failed");
+  assert.equal(existsSync(jobFile), true);
+  assert.equal(existsSync(join(fixture.dir, ".writer.lock")), false);
+});
+
 test("a new topic at the scope cap goes to the closest existing topic", async () => {
   const fixture = setup({ maxGenericTopics: 2, staleTopicDays: 100000 });
   const { model, prompts } = scriptedModel({
