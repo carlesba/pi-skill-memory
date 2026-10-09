@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { resolveConfig } from "../src/config.ts";
 import { enqueueWriter, shellQuote, writerCommand, type Exec, type ExecResult } from "../src/writer/enqueue.ts";
-import { loadJob, type WriterJob } from "../src/writer/job.ts";
+import { loadJob, parseJob, writeJob, type WriterJob } from "../src/writer/job.ts";
 import type { SpawnFunction } from "../src/writer/model.ts";
 
 function makeJob(runner: "pueue" | "detached"): WriterJob {
@@ -119,4 +119,12 @@ test("the writer command runs the compiled entry point when dist exists and the 
   const compiled = "/pkg/dist/writer/main.js";
   assert.deepEqual(writerCommand("/pkg", "/jobs/a.json", (path) => path === compiled), [process.execPath, compiled, "/jobs/a.json"]);
   assert.deepEqual(writerCommand("/pkg", "/jobs/a.json", () => false), [process.execPath, "/pkg/src/writer/main.ts", "/jobs/a.json"]);
+});
+
+test("a job file carries learnFromSources to the writer, and an older job file reads the default", () => {
+  const job = makeJob("detached");
+  job.config.learnFromSources = ["interactive", "rpc"];
+  assert.deepEqual(loadJob(writeJob(job)).config.learnFromSources, ["interactive", "rpc"]);
+  const older = JSON.stringify({ config: { dir: "/m", stateDir: "/s" }, sessionFile: "/session.jsonl" });
+  assert.deepEqual(parseJob(older).config.learnFromSources, ["interactive"]);
 });

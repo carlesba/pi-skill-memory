@@ -230,10 +230,11 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     if (why !== null) deletedTopics.push({ topic: name, why });
   }
 
-  const digest = readSession(job.sessionFile, { dir, resolver: deps.resolver, home });
+  const digest = readSession(job.sessionFile, { dir, resolver: deps.resolver, home, learnFromSources: config.learnFromSources });
   const sessionId = job.sessionId || digest.sessionId;
-  if (!job.force && digest.turns.length < config.minUserMessages) {
-    log(`skipped: ${digest.turns.length} user messages, fewer than ${config.minUserMessages}`);
+  const humanMessages = digest.turns.filter((turn) => turn.human).length;
+  if (!job.force && humanMessages < config.minUserMessages) {
+    log(`skipped: ${humanMessages} human messages, fewer than ${config.minUserMessages}`);
     return finish("skipped");
   }
 

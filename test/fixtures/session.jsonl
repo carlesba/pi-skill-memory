@@ -1,11 +1,14 @@
 {"type":"session","version":3,"id":"sess-1","timestamp":"2025-03-01T10:00:00.000Z","cwd":"__CWD__"}
 {"type":"model_change","id":"e1","parentId":null,"timestamp":"2025-03-01T10:00:00.000Z","provider":"p","modelId":"m"}
-{"type":"message","id":"e2","parentId":"e1","timestamp":"2025-03-01T10:00:01.000Z","message":{"role":"user","content":"Add a test for the parser. Use node:test, never vitest, in every repo.","timestamp":1}}
+{"type":"custom","customType":"pi-skill-memory-input","id":"m1","parentId":"e1","timestamp":"2025-03-01T10:00:00.000Z","data":{"messageTimestamp":1,"source":"interactive","mode":"tui"}}
+{"type":"message","id":"e2","parentId":"m1","timestamp":"2025-03-01T10:00:01.000Z","message":{"role":"user","content":"Add a test for the parser. Use node:test, never vitest, in every repo.","timestamp":1}}
 {"type":"message","id":"e3","parentId":"e2","timestamp":"2025-03-01T10:00:02.000Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Reading the memory first."},{"type":"toolCall","id":"t1","name":"read","arguments":{"path":"__MEMORY_DIR__/memory-skills/mem-any-testing/SKILL.md"}},{"type":"toolCall","id":"t2","name":"bash","arguments":{"command":"cd __CWD__ && ls"}}],"timestamp":2}}
 {"type":"message","id":"e4","parentId":"e3","timestamp":"2025-03-01T10:00:03.000Z","message":{"role":"toolResult","toolCallId":"t1","toolName":"read","content":[{"type":"text","text":"..."}],"isError":false,"timestamp":3}}
 {"type":"message","id":"e5","parentId":"e4","timestamp":"2025-03-01T10:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Added test/parser.test.ts using vitest."}],"timestamp":4}}
-{"type":"message","id":"e6","parentId":"e5","timestamp":"2025-03-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"No, I said node:test. Also forget the rule about snapshot files, I no longer want that."}],"timestamp":5}}
+{"type":"custom","customType":"pi-skill-memory-input","id":"m2","parentId":"e5","timestamp":"2025-03-01T10:00:00.000Z","data":{"messageTimestamp":5,"source":"interactive","mode":"tui"}}
+{"type":"message","id":"e6","parentId":"m2","timestamp":"2025-03-01T10:00:05.000Z","message":{"role":"user","content":[{"type":"text","text":"No, I said node:test. Also forget the rule about snapshot files, I no longer want that."}],"timestamp":5}}
 {"type":"message","id":"x1","parentId":"e5","timestamp":"2025-03-01T10:00:05.500Z","message":{"role":"user","content":"abandoned branch message","timestamp":6}}
 {"type":"message","id":"e7","parentId":"e6","timestamp":"2025-03-01T10:00:06.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Switched to node:test."}],"timestamp":7}}
-{"type":"message","id":"e8","parentId":"e7","timestamp":"2025-03-01T10:00:07.000Z","message":{"role":"user","content":"Thanks, that works.","timestamp":8}}
+{"type":"custom","customType":"pi-skill-memory-input","id":"m3","parentId":"e7","timestamp":"2025-03-01T10:00:00.000Z","data":{"messageTimestamp":8,"source":"interactive","mode":"tui"}}
+{"type":"message","id":"e8","parentId":"m3","timestamp":"2025-03-01T10:00:07.000Z","message":{"role":"user","content":"Thanks, that works.","timestamp":8}}
 {"type":"message","id":"e9","parentId":"e8","timestamp":"2025-03-01T10:00:08.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"timestamp":9}}

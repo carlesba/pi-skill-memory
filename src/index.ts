@@ -7,6 +7,8 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
+  InputEvent,
+  MessageStartEvent,
   ResourcesDiscoverEvent,
   ResourcesDiscoverResult,
   SessionShutdownEvent,
@@ -16,6 +18,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { formatExplain, formatStatus, type ListedTopic, type ReminderRecord } from "./commands.ts";
 import { resolveConfig, shouldSkipWrite, type MemoryConfig } from "./config.ts";
+import {
+  countHumanMessages,
+  INPUT_MARK_TYPE,
+  messageText,
+  rememberInput,
+  takeInputFor,
+  type InputMark,
+  type PendingInput,
+} from "./human.ts";
 import { extractToolPaths } from "./paths.ts";
 import { knownRepoIdentities, promptNamedRepos, reminderLine, reminderTopics } from "./reminders.ts";
 import { createRepoResolver, type RepoResolver } from "./repo.ts";
@@ -54,9 +65,11 @@ interface SessionState {
   reminders: ReminderRecord[];
   loaded: Set<string>;
   manualWriteLeaf: string | null | undefined;
+  pendingInputs: PendingInput[];
 }
 
 type SessionView = Pick<ExtensionContext, "cwd" | "sessionManager">;
+type ModeView = SessionView & Pick<ExtensionContext, "mode">;
 
 function readUserMemory(dir: string): string | null {
   try {
@@ -73,16 +86,6 @@ function errorMessage(error: unknown): string {
 
 export function userMemorySection(snapshot: string): string {
   return `${USER_MEMORY_HEADING}\n\n${snapshot}`;
-}
-
-export function countUserMessages(entries: readonly unknown[]): number {
-  let count = 0;
-  for (const entry of entries) {
-    if (typeof entry !== "object" || entry === null) continue;
-    const record = entry as { type?: unknown; message?: { role?: unknown } };
-    if (record.type === "message" && record.message?.role === "user") count++;
-  }
-  return count;
 }
 
 export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: ExtensionAPI) => void {
@@ -112,6 +115,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         reminders: [],
         loaded: new Set(),
         manualWriteLeaf: undefined,
+        pendingInputs: [],
       };
       return state;
     }
@@ -226,6 +230,37 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       }
     });
 
+    pi.on("input", (event: InputEvent, ctx: ModeView) => {
+      try {
+        rememberInput(current(ctx).pendingInputs, {
+          text: event.text,
+          source: event.source,
+          mode: ctx.mode,
+          streamingBehavior: event.streamingBehavior,
+        });
+      } catch (error) {
+        logFailure("input", error);
+      }
+      return undefined;
+    });
+
+    pi.on("message_start", (event: MessageStartEvent, ctx) => {
+      try {
+        const message = event.message as { role?: unknown; content?: unknown; timestamp?: unknown };
+        if (message.role !== "user" || typeof message.timestamp !== "number") return;
+        const input = takeInputFor(current(ctx).pendingInputs, messageText(message.content));
+        if (!input) return;
+        const mark: InputMark = { messageTimestamp: message.timestamp, source: input.source, mode: input.mode };
+        pi.appendEntry(INPUT_MARK_TYPE, mark);
+      } catch (error) {
+        logFailure("message_start", error);
+      }
+    });
+
+    pi.on("agent_settled", () => {
+      if (state) state.pendingInputs.length = 0;
+    });
+
     pi.on("session_compact", () => {
       state?.announced.clear();
     });
@@ -260,7 +295,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         const sessionFile = ctx.sessionManager.getSessionFile();
         if (!sessionFile) return;
         const branch = ctx.sessionManager.getBranch();
-        if (countUserMessages(branch) < session.config.minUserMessages) return;
+        if (countHumanMessages(branch, session.config.learnFromSources) < session.config.minUserMessages) return;
         if (session.manualWriteLeaf !== undefined && session.manualWriteLeaf === ctx.sessionManager.getLeafId()) return;
         deps.enqueue(buildJob(session, ctx, sessionFile, false));
       } catch (error) {

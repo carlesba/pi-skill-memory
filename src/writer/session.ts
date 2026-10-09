@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve } from "node:path";
+import { DEFAULT_LEARN_FROM_SOURCES, humanMessageTimestamps, isUserMessageFrom, messageText, type InputSource } from "../human.ts";
 import { extractToolPaths } from "../paths.ts";
 import { createRepoResolver, type RepoResolver } from "../repo.ts";
 import { topicsRoot } from "../topics.ts";
@@ -11,6 +12,7 @@ export const MAX_ASSISTANT_TEXT_CHARS = 1500;
 
 export interface SessionTurn {
   user: string;
+  human: boolean;
   assistant: string | null;
 }
 
@@ -26,6 +28,7 @@ export interface ReadSessionOptions {
   dir: string;
   resolver?: RepoResolver;
   home?: string;
+  learnFromSources?: readonly InputSource[];
 }
 
 interface RawEntry {
@@ -80,15 +83,6 @@ function activeBranch(entries: RawEntry[]): RawEntry[] {
   return branch.reverse();
 }
 
-function textOf(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .filter((block): block is { type: "text"; text: string } => isRecord(block) && block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
-    .join("\n");
-}
-
 function toolCallsOf(content: unknown): ToolCallBlock[] {
   if (!Array.isArray(content)) return [];
   return content
@@ -124,13 +118,15 @@ export function parseSession(raw: string, options: ReadSessionOptions): SessionD
   const turns: SessionTurn[] = [];
   const touchedPaths = new Set<string>([cwd]);
   const memoryReads = new Set<string>();
-  for (const entry of activeBranch(entries)) {
+  const branch = activeBranch(entries);
+  const humanTimestamps = humanMessageTimestamps(branch, options.learnFromSources ?? DEFAULT_LEARN_FROM_SOURCES);
+  for (const entry of branch) {
     if (entry.type !== "message" || !isRecord(entry.message)) continue;
     const message = entry.message;
     if (message.role === "user") {
-      const text = textOf(message.content).trim();
+      const text = messageText(message.content).trim();
       if (text === "") continue;
-      turns.push({ user: truncateText(text, MAX_USER_MESSAGE_CHARS), assistant: null });
+      turns.push({ user: truncateText(text, MAX_USER_MESSAGE_CHARS), human: isUserMessageFrom(entry, humanTimestamps), assistant: null });
       continue;
     }
     if (message.role !== "assistant") continue;

@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { DEFAULT_LEARN_FROM_SOURCES, isInputSource, type InputSource } from "./human.ts";
 
 export type RunnerKind = "detached" | "pueue";
 
@@ -21,6 +22,7 @@ export interface MemoryConfig {
   staleTopicDays: number;
   autoCommit: boolean;
   skipWriteWhenEnv: string[];
+  learnFromSources: InputSource[];
 }
 
 export interface ConfigEnvironment {
@@ -28,7 +30,7 @@ export interface ConfigEnvironment {
   home?: string;
 }
 
-export const DEFAULT_SKIP_WRITE_WHEN_ENV = ["NIGHTSHIFT_JOB", "PI_SUBAGENT_AGENT_ID"];
+export const DEFAULT_SKIP_WRITE_WHEN_ENV: string[] = [];
 
 const numericDefaults = {
   minUserMessages: 3,
@@ -101,6 +103,9 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
   const skip = Array.isArray(memory.skipWriteWhenEnv)
     ? memory.skipWriteWhenEnv.filter((name): name is string => typeof name === "string" && name !== "")
     : [...DEFAULT_SKIP_WRITE_WHEN_ENV];
+  const learnFromSources = Array.isArray(memory.learnFromSources)
+    ? [...new Set(memory.learnFromSources.filter(isInputSource))]
+    : [...DEFAULT_LEARN_FROM_SOURCES];
   return {
     agentDir,
     dir: dirSetting ? resolveSettingPath(dirSetting, home, agentDir) : join(agentDir, "memory"),
@@ -111,6 +116,7 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
     ...numbers,
     autoCommit: typeof memory.autoCommit === "boolean" ? memory.autoCommit : true,
     skipWriteWhenEnv: skip,
+    learnFromSources,
   };
 }
 

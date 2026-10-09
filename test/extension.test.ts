@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { countHumanMessages } from "../src/human.ts";
 import extension, { createExtension, USER_MEMORY_SECTION, type ExtensionDeps } from "../src/index.ts";
 import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
@@ -71,9 +72,13 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     getSettings() {
       return { memory: { dir: fixture.dir, stateDir: fixture.stateDir, ...options.memory } };
     },
+    appendEntry(customType: string, data: unknown) {
+      session.branch.push({ type: "custom", id: `c${session.branch.length}`, customType, data });
+    },
   };
-  const ctx = (cwd = "/work/apollo") => ({
+  const ctx = (cwd = "/work/apollo", mode = "tui") => ({
     cwd,
+    mode,
     hasUI: true,
     ui: { notify: (text: string, level = "info") => notes.push({ text, level }) },
     sessionManager: {
@@ -113,7 +118,21 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
       context,
     )) as { content: { type: string; text: string }[]; structuredContent: unknown } | undefined;
   }
-  return { handlers, commands, jobs, notes, session, ctx, fire, command, toolRound };
+  let clock = 1000;
+  async function deliver(text: string, source: string, options: { mode?: string; streamingBehavior?: string } = {}) {
+    const context = ctx("/work/apollo", options.mode);
+    await fire("input", { text, source, streamingBehavior: options.streamingBehavior }, context);
+    return () => receive(text, context);
+  }
+  async function receive(text: string, context = ctx()) {
+    const message = { role: "user", content: [{ type: "text", text }], timestamp: clock++ };
+    await fire("message_start", { message }, context);
+    session.branch.push({ type: "message", id: `m${session.branch.length}`, message });
+  }
+  async function typed(text: string, source = "interactive", mode = "tui") {
+    await (await deliver(text, source, { mode }))();
+  }
+  return { handlers, commands, jobs, notes, session, ctx, fire, command, toolRound, deliver, receive, typed };
 }
 
 function userMessages(count: number): unknown[] {
@@ -140,7 +159,18 @@ test("the default export registers every handler and the memory command without 
   extension(pi as unknown as ExtensionAPI);
   assert.deepEqual(
     [...events].sort(),
-    ["before_agent_start", "resources_discover", "session_compact", "session_shutdown", "session_start", "tool_call", "tool_result"],
+    [
+      "agent_settled",
+      "before_agent_start",
+      "input",
+      "message_start",
+      "resources_discover",
+      "session_compact",
+      "session_shutdown",
+      "session_start",
+      "tool_call",
+      "tool_result",
+    ],
   );
   assert.deepEqual(commands, ["memory"]);
 });
@@ -300,18 +330,23 @@ test("user.md is snapshotted at session start and injected identically on every 
   assert.deepEqual(systemPromptOptions.sections, {});
 });
 
-test("session_shutdown enqueues a writer job only past minUserMessages and outside skip envs", async () => {
+async function typeMessages(h: ReturnType<typeof harness>, count: number): Promise<void> {
+  for (let index = 0; index < count; index++) await h.typed(`message ${index}`);
+}
+
+test("session_shutdown enqueues a writer job only past minUserMessages human messages and outside skip envs", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
 
   const few = harness(fixture);
   await few.fire("session_start", { reason: "startup" });
-  few.session.branch = userMessages(2);
+  await typeMessages(few, 2);
   await few.fire("session_shutdown", { reason: "quit" });
   assert.equal(few.jobs.length, 0);
 
   const enough = harness(fixture);
   await enough.fire("session_start", { reason: "startup" });
-  enough.session.branch = [...userMessages(3), { type: "message", id: "a1", message: { role: "assistant", content: [] } }];
+  await typeMessages(enough, 3);
+  enough.session.branch.push({ type: "message", id: "a1", message: { role: "assistant", content: [] } });
   await enough.fire("session_shutdown", { reason: "quit" }, enough.ctx("/work/apollo/sub"));
   assert.equal(enough.jobs.length, 1);
   const job = enough.jobs[0]!;
@@ -322,44 +357,110 @@ test("session_shutdown enqueues a writer job only past minUserMessages and outsi
   assert.equal(job.force, false);
   assert.equal(job.createdAt, "2025-03-01T12:00:00.000Z");
   assert.equal(job.config.dir, fixture.dir);
+  assert.deepEqual(job.config.learnFromSources, ["interactive"]);
 
   const lowered = harness(fixture, { memory: { minUserMessages: 1 } });
   await lowered.fire("session_start", { reason: "startup" });
-  lowered.session.branch = userMessages(1);
+  await typeMessages(lowered, 1);
   await lowered.fire("session_shutdown", { reason: "new" });
   assert.equal(lowered.jobs.length, 1);
 
-  const nightshift = harness(fixture, { deps: { env: { NIGHTSHIFT_JOB: "1" } } });
-  await nightshift.fire("session_start", { reason: "startup" });
-  nightshift.session.branch = userMessages(5);
-  await nightshift.fire("session_shutdown", { reason: "quit" });
-  assert.equal(nightshift.jobs.length, 0);
+  const otherTools = harness(fixture, { deps: { env: { NIGHTSHIFT_JOB: "1", PI_SUBAGENT_AGENT_ID: "a1" } } });
+  await otherTools.fire("session_start", { reason: "startup" });
+  await typeMessages(otherTools, 5);
+  await otherTools.fire("session_shutdown", { reason: "quit" });
+  assert.equal(otherTools.jobs.length, 1);
 
-  const custom = harness(fixture, { memory: { skipWriteWhenEnv: ["MY_BOT"] }, deps: { env: { MY_BOT: "yes", NIGHTSHIFT_JOB: "1" } } });
+  const custom = harness(fixture, { memory: { skipWriteWhenEnv: ["MY_BOT"] }, deps: { env: { MY_BOT: "yes" } } });
   await custom.fire("session_start", { reason: "startup" });
-  custom.session.branch = userMessages(5);
+  await typeMessages(custom, 5);
   await custom.fire("session_shutdown", { reason: "quit" });
   assert.equal(custom.jobs.length, 0);
 
   const reload = harness(fixture);
   await reload.fire("session_start", { reason: "startup" });
-  reload.session.branch = userMessages(5);
+  await typeMessages(reload, 5);
   await reload.fire("session_shutdown", { reason: "reload" });
   assert.equal(reload.jobs.length, 0);
 
   const ephemeral = harness(fixture);
   await ephemeral.fire("session_start", { reason: "startup" });
-  ephemeral.session.branch = userMessages(5);
+  await typeMessages(ephemeral, 5);
   ephemeral.session.file = undefined;
   await ephemeral.fire("session_shutdown", { reason: "quit" });
   assert.equal(ephemeral.jobs.length, 0);
+});
+
+test("only interactive TUI input counts as human by default", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const h = harness(fixture, { memory: { minUserMessages: 1 } });
+  await h.fire("session_start", { reason: "startup" });
+  await h.typed("typed by a person");
+  await h.typed("sent by an extension", "extension");
+  await h.typed("sent over rpc", "rpc", "rpc");
+  await h.typed("pi -p prompt", "interactive", "print");
+  await h.typed("pi --mode json prompt", "interactive", "json");
+  const marks = h.session.branch.filter((entry: any) => entry.type === "custom");
+  assert.deepEqual(
+    marks.map((entry: any) => entry.data),
+    [
+      { messageTimestamp: 1000, source: "interactive", mode: "tui" },
+      { messageTimestamp: 1001, source: "extension", mode: "tui" },
+      { messageTimestamp: 1002, source: "rpc", mode: "rpc" },
+      { messageTimestamp: 1003, source: "interactive", mode: "print" },
+      { messageTimestamp: 1004, source: "interactive", mode: "json" },
+    ],
+  );
+  assert.ok(marks.every((entry: any) => entry.customType === "pi-skill-memory-input"));
+  assert.equal(countHumanMessages(h.session.branch, ["interactive"]), 1);
+  assert.equal(countHumanMessages(h.session.branch, ["interactive", "rpc"]), 2);
+  assert.equal(countHumanMessages(h.session.branch, ["interactive", "rpc", "extension"]), 3);
+  assert.equal(countHumanMessages(h.session.branch, []), 0);
+});
+
+test("a session with no human messages never enqueues, and rpc counts once configured", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+
+  const programs = harness(fixture, { memory: { minUserMessages: 1 } });
+  await programs.fire("session_start", { reason: "startup" });
+  for (let index = 0; index < 5; index++) await programs.typed(`brief ${index}`, "extension");
+  await programs.typed("scripted rpc prompt", "rpc", "rpc");
+  await programs.typed("pi -p brief", "interactive", "print");
+  programs.session.branch.push(...userMessages(5));
+  await programs.fire("session_shutdown", { reason: "quit" });
+  assert.equal(programs.jobs.length, 0);
+
+  const rpc = harness(fixture, { memory: { minUserMessages: 2, learnFromSources: ["interactive", "rpc"] } });
+  await rpc.fire("session_start", { reason: "startup" });
+  await rpc.typed("first rpc prompt", "rpc", "rpc");
+  await rpc.typed("second rpc prompt", "rpc", "rpc");
+  await rpc.fire("session_shutdown", { reason: "quit" });
+  assert.equal(rpc.jobs.length, 1);
+  assert.deepEqual(rpc.jobs[0]!.config.learnFromSources, ["interactive", "rpc"]);
+});
+
+test("queued input is paired with the user message pi delivers for it", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  const followUp = await h.deliver("after you finish, update the changelog", "interactive", { streamingBehavior: "followUp" });
+  await h.deliver("/skill:review", "extension", { streamingBehavior: "steer" });
+  await h.receive("Expanded review skill text");
+  await followUp();
+  const marks = h.session.branch.filter((entry: any) => entry.type === "custom").map((entry: any) => entry.data.source);
+  assert.deepEqual(marks, ["extension", "interactive"]);
+
+  await h.deliver("handled elsewhere", "interactive");
+  await h.fire("agent_settled", { aborted: false });
+  await h.receive("a message no input produced");
+  assert.equal(h.session.branch.filter((entry: any) => entry.type === "custom").length, 2);
 });
 
 test("/memory write enqueues a forced job now and shutdown does not repeat it for the same leaf", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
-  h.session.branch = userMessages(5);
+  await typeMessages(h, 5);
   const reply = await h.command("write");
   assert.match(reply, /Queued the memory writer for this session \(detached runner/);
   assert.equal(h.jobs.length, 1);
@@ -369,12 +470,19 @@ test("/memory write enqueues a forced job now and shutdown does not repeat it fo
 
   const later = harness(fixture);
   await later.fire("session_start", { reason: "startup" });
-  later.session.branch = userMessages(5);
+  await typeMessages(later, 5);
   await later.command("write");
   later.session.leaf = "leaf-2";
   await later.fire("session_shutdown", { reason: "quit" });
   assert.equal(later.jobs.length, 2);
   assert.equal(later.jobs[1]!.force, false);
+
+  const programsOnly = harness(fixture);
+  await programsOnly.fire("session_start", { reason: "startup" });
+  programsOnly.session.branch = userMessages(5);
+  await programsOnly.command("write");
+  assert.equal(programsOnly.jobs.length, 1);
+  assert.equal(programsOnly.jobs[0]!.force, true);
 });
 
 test("/memory status reports the dir, topic counts per scope, the last run and the runner", async () => {

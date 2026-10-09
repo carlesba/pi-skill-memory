@@ -151,6 +151,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
 
   const extractPrompt = prompts[0]!;
   assert.match(extractPrompt, /- acme\/app/);
+  assert.match(extractPrompt, /### User message 1\n\nAdd a test for the parser\./);
   assert.match(extractPrompt, /- r2: Keep snapshot files next to the test\./);
   assert.match(extractPrompt, /- git: Git workflow rules/);
   const testingPrompt = prompts.find((prompt) => prompt.includes("- Name: mem-any-testing"))!;
@@ -308,6 +309,24 @@ test("skips sessions with fewer user messages than minUserMessages unless forced
   assert.equal(called, true);
   assert.equal(forced.outcome, "ok");
   assert.deepEqual(forced.topics, ["mem-any-old-notes"]);
+});
+
+test("a session whose user messages all came from programs is skipped, and a forced run labels them", async () => {
+  const fixture = setup({ minUserMessages: 1 });
+  const raw = readFileSync(fixture.sessionFile, "utf8");
+  writeFileSync(fixture.sessionFile, raw.replaceAll('"source":"interactive"', '"source":"extension"'));
+  const prompts: string[] = [];
+  const model: ModelRunner = async (prompt) => {
+    prompts.push(prompt);
+    return '{"candidates": [], "votes": []}';
+  };
+  const skipped = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.equal(skipped.outcome, "skipped");
+  assert.equal(prompts.length, 0);
+  const forced = await runPipeline(job(fixture, { force: true }), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.notEqual(forced.outcome, "skipped");
+  assert.match(prompts[0]!, /### Instructions from another program, message 1\n\nAdd a test for the parser\./);
+  assert.doesNotMatch(prompts[0]!, /### User message/);
 });
 
 test("a stale topic with a similar neighbour is merged into it through pass 2", async () => {

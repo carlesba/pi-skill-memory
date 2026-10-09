@@ -22,7 +22,8 @@ test("applies defaults when the memory key is missing", () => {
   assert.equal(config.protectNewDays, 30);
   assert.equal(config.staleTopicDays, 60);
   assert.equal(config.autoCommit, true);
-  assert.deepEqual(config.skipWriteWhenEnv, ["NIGHTSHIFT_JOB", "PI_SUBAGENT_AGENT_ID"]);
+  assert.deepEqual(config.skipWriteWhenEnv, []);
+  assert.deepEqual(config.learnFromSources, ["interactive"]);
 });
 
 test("honours PI_CODING_AGENT_DIR and XDG_STATE_HOME", () => {
@@ -43,6 +44,7 @@ test("reads overrides, expands ~ and ignores invalid values", () => {
         halfLifeDays: "soon",
         autoCommit: false,
         skipWriteWhenEnv: ["CI", 3],
+        learnFromSources: ["rpc", "interactive", "rpc", "typed", 4],
       },
     },
     { env: {}, home },
@@ -55,12 +57,17 @@ test("reads overrides, expands ~ and ignores invalid values", () => {
   assert.equal(config.halfLifeDays, 90);
   assert.equal(config.autoCommit, false);
   assert.deepEqual(config.skipWriteWhenEnv, ["CI"]);
+  assert.deepEqual(config.learnFromSources, ["rpc", "interactive"]);
+  assert.deepEqual(resolveConfig({ memory: { learnFromSources: [] } }, { env: {}, home }).learnFromSources, []);
+  assert.deepEqual(resolveConfig({ memory: { learnFromSources: "rpc" } }, { env: {}, home }).learnFromSources, ["interactive"]);
   assert.equal(resolveConfig({ memory: { runner: "cron" } }, { env: {}, home }).runner, "detached");
 });
 
-test("skipWrite fires on any configured env var", () => {
-  const config = resolveConfig({}, { env: {}, home });
+test("skipWrite fires on any configured env var and on none by default", () => {
+  const defaults = resolveConfig({}, { env: {}, home });
+  assert.equal(shouldSkipWrite(defaults, { NIGHTSHIFT_JOB: "1", PI_SUBAGENT_AGENT_ID: "a1" }), false);
+  const config = resolveConfig({ memory: { skipWriteWhenEnv: ["MY_BOT", "MY_JOB"] } }, { env: {}, home });
   assert.equal(shouldSkipWrite(config, {}), false);
-  assert.equal(shouldSkipWrite(config, { PI_SUBAGENT_AGENT_ID: "a1" }), true);
-  assert.equal(shouldSkipWrite(config, { NIGHTSHIFT_JOB: "" }), false);
+  assert.equal(shouldSkipWrite(config, { MY_JOB: "a1" }), true);
+  assert.equal(shouldSkipWrite(config, { MY_BOT: "" }), false);
 });
