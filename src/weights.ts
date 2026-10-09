@@ -1,6 +1,6 @@
 import type { Ledger, MemoryEntry, StoredMemoryVoteKind, TopicVoteKind, Vote } from "./ledger.ts";
 import { memoryIdNumber } from "./ledger.ts";
-import type { Scope } from "./topics.ts";
+import { memoryIds, serializeMemories, withoutMemories, type Memory, type Scope } from "./topics.ts";
 
 export const VOTE_VALUES: Record<StoredMemoryVoteKind | TopicVoteKind, number> = {
   applied: 1,
@@ -80,15 +80,12 @@ function compareLearned(a: string, b: string): number {
   return leftTime - rightTime;
 }
 
-export function selectMemoryEvictions(
+export function evictionOrder(
   ledger: Ledger,
   ids: string[],
-  maxMemories: number,
   now: Date,
   settings: Pick<WeightSettings, "halfLifeDays" | "protectNewDays">,
 ): string[] {
-  const excess = ids.length - maxMemories;
-  if (excess <= 0) return [];
   return ids
     .filter((id) => !isProtected(ledger.memories[id]?.learned, now, settings.protectNewDays))
     .map((id) => ({
@@ -98,8 +95,43 @@ export function selectMemoryEvictions(
       number: memoryIdNumber(id) ?? 0,
     }))
     .sort((a, b) => a.weight - b.weight || compareLearned(a.learned, b.learned) || a.number - b.number)
-    .slice(0, excess)
     .map((candidate) => candidate.id);
+}
+
+export function selectMemoryEvictions(
+  ledger: Ledger,
+  ids: string[],
+  maxMemories: number,
+  now: Date,
+  settings: Pick<WeightSettings, "halfLifeDays" | "protectNewDays">,
+): string[] {
+  const excess = ids.length - maxMemories;
+  if (excess <= 0) return [];
+  return evictionOrder(ledger, ids, now, settings).slice(0, excess);
+}
+
+export interface SizeEvictions {
+  evicted: string[];
+  memories: Memory[];
+  fits: boolean;
+}
+
+export function selectSizeEvictions(
+  ledger: Ledger,
+  memories: Memory[],
+  maxChars: number,
+  now: Date,
+  settings: Pick<WeightSettings, "halfLifeDays" | "protectNewDays">,
+): SizeEvictions {
+  let kept = memories;
+  const evicted: string[] = [];
+  const fits = () => serializeMemories(kept).length <= maxChars;
+  for (const id of evictionOrder(ledger, memoryIds(serializeMemories(memories)), now, settings)) {
+    if (fits()) break;
+    kept = withoutMemories(kept, [id]);
+    evicted.push(id);
+  }
+  return { evicted, memories: kept, fits: fits() };
 }
 
 export function topicCreated(ledger: Ledger): string | null {

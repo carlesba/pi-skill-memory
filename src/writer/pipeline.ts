@@ -2,12 +2,13 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { homedir } from "node:os";
 import { dirname, basename } from "node:path";
 import {
+  adoptBodyIds,
+  adoptUnknownId,
   emptyLedger,
   isoDate,
   loadLedger,
   mintId,
   recordVote,
-  reserveIdsAbove,
   saveLedger,
   sweepLedger,
   type Ledger,
@@ -18,6 +19,7 @@ import {
   listTopics,
   memoryIds,
   mintTopicName,
+  parseMemories,
   parseTopic,
   serializeMemories,
   serializeTopic,
@@ -32,6 +34,7 @@ import {
   isScopeAtCap,
   memoryWeight,
   selectMemoryEvictions,
+  selectSizeEvictions,
   selectStaleTopics,
   selectTopicEvictions,
   topicWeight,
@@ -47,6 +50,7 @@ import {
   loadPrompt,
   PACKAGE_ROOT,
   type MergeCandidate,
+  type MergeMemory,
 } from "./prompts.ts";
 import type { RunOutcomeKind } from "./runs.ts";
 import { readSession } from "./session.ts";
@@ -70,15 +74,18 @@ export interface PipelineResult {
   committed: boolean;
 }
 
-interface TopicState {
+interface MemoryHolder {
+  memories: Memory[];
+  ledger: Ledger;
+  bodyChanged: boolean;
+  ledgerChanged: boolean;
+}
+
+interface TopicState extends MemoryHolder {
   name: string;
   scope: Scope;
   description: string;
-  memories: Memory[];
-  ledger: Ledger;
   isNew: boolean;
-  bodyChanged: boolean;
-  ledgerChanged: boolean;
   merged: boolean;
   needsMerge: boolean;
   flags: Set<string>;
@@ -86,6 +93,7 @@ interface TopicState {
 }
 
 const USER_FILE = "user.md";
+const USER_LEDGER_FILE = "user.ledger.json";
 const PROPOSALS_FILE = "proposals.md";
 const IGNORED_FLAG = "an ignored vote shows agents miss this topic when it applies; reword the description so it loads at that moment";
 
@@ -108,6 +116,38 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function presentIds(memories: Memory[]): string[] {
+  return memoryIds(serializeMemories(memories));
+}
+
+function mergeMemoriesOf(holder: MemoryHolder, now: Date, halfLifeDays: number): MergeMemory[] {
+  return holder.memories.map((memory) => {
+    const entry = memory.id ? holder.ledger.memories[memory.id] : undefined;
+    return {
+      id: memory.id ?? "new",
+      text: memory.text,
+      weight: memoryWeight(entry, now, halfLifeDays),
+      learned: entry?.learned ?? "",
+      origin: entry?.origin ?? "human",
+    };
+  });
+}
+
+function mintNewMemories(memories: Memory[], ledger: Ledger, source: string, now: Date): Memory[] {
+  return memories.map((memory) => (memory.id === "new" ? { id: mintId(ledger, source, now), text: memory.text } : memory));
+}
+
+function loadUserMemory(dir: string): MemoryHolder {
+  const ledger = loadLedger(confinedPath(dir, USER_LEDGER_FILE));
+  const parsed = parseMemories(readOptional(confinedPath(dir, USER_FILE)));
+  adoptBodyIds(ledger, presentIds(parsed));
+  const unmarked = parsed.some((memory) => memory.id === null || memory.id === "new");
+  const memories = parsed.map((memory) =>
+    memory.id === null || memory.id === "new" ? { id: adoptUnknownId(ledger), text: memory.text } : memory,
+  );
+  return { memories, ledger, bodyChanged: unmarked, ledgerChanged: unmarked };
+}
+
 function loadTopics(dir: string): Map<string, TopicState> {
   const topics = new Map<string, TopicState>();
   for (const summary of listTopics(dir)) {
@@ -121,9 +161,7 @@ function loadTopics(dir: string): Map<string, TopicState> {
     const parsed = parseTopic(readOptional(skillPath));
     if (!parsed) continue;
     const ledger = loadLedger(confinedTopicPath(dir, name, "ledger.json"));
-    const bodyIds = memoryIds(serializeMemories(parsed.memories));
-    reserveIdsAbove(ledger, bodyIds);
-    for (const id of bodyIds) ledger.memories[id] ??= { source: "", origin: "human", learned: "", votes: [] };
+    adoptBodyIds(ledger, presentIds(parsed.memories));
     topics.set(name, {
       name,
       scope: parsed.scope,
@@ -159,13 +197,23 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   const deletedTopics: CommitSummary["deletedTopics"] = [];
   const proposals: string[] = [];
   let userChanged = false;
+  let user: MemoryHolder | null = null;
 
   const topics = loadTopics(dir);
   const sameScope = (scope: Scope, except?: string) =>
     [...topics.values()].filter((topic) => topic.scope === scope && topic.name !== except);
   const saveTopicLedger = (topic: TopicState) => {
-    sweepLedger(topic.ledger, memoryIds(serializeMemories(topic.memories)));
+    sweepLedger(topic.ledger, presentIds(topic.memories));
     saveLedger(confinedTopicPath(dir, topic.name, "ledger.json"), topic.ledger);
+  };
+  const saveUserMemory = (holder: MemoryHolder) => {
+    if (holder.bodyChanged) {
+      const body = serializeMemories(holder.memories);
+      writeAtomic(confinedPath(dir, USER_FILE), body === "" ? "" : `${body}\n`);
+      userChanged = true;
+    }
+    sweepLedger(holder.ledger, presentIds(holder.memories));
+    saveLedger(confinedPath(dir, USER_LEDGER_FILE), holder.ledger);
   };
 
   const folded = foldUsageLog(
@@ -205,8 +253,10 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       saveTopicLedger(topic);
     }
     for (const entry of deletedTopics) touchedTopics.add(entry.topic);
+    if (user && (user.bodyChanged || user.ledgerChanged)) saveUserMemory(user);
     const changedContent = touchedTopics.size > 0 || userChanged || proposals.length > 0;
-    const changedAnything = changedContent || [...topics.values()].some((topic) => topic.ledgerChanged);
+    const changedAnything =
+      changedContent || user?.ledgerChanged === true || [...topics.values()].some((topic) => topic.ledgerChanged);
     let committed = false;
     if (config.autoCommit && changedAnything) {
       const message = buildCommitMessage({
@@ -243,13 +293,13 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       topics.has(name),
     ),
   );
-  const userPath = confinedPath(dir, USER_FILE);
-  const userMemory = readOptional(userPath);
+  const userMemory = loadUserMemory(dir);
+  user = userMemory;
   const skills = readSkillIndex(skillIndexRoots({ agentDir: config.agentDir, home, cwd: job.cwd || digest.cwd }), dir);
   const extractPrompt = buildExtractPrompt(
     {
       repos: digest.repos,
-      userMemory,
+      userMemory: serializeMemories(userMemory.memories),
       topics: [...topics.values()].map((topic) => ({ name: topic.name, description: topic.description, scope: topic.scope })),
       skills,
       loadedTopics: [...loadedNames].sort().map((name) => {
@@ -267,8 +317,8 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       topicNames: new Set(topics.keys()),
       skillNames: new Set(skills.map((skill) => skill.name)),
       memoryIdsOf: (name) => {
-        const topic = topics.get(name);
-        return topic ? new Set(memoryIds(serializeMemories(topic.memories))) : null;
+        const holder = name === USER_FILE ? userMemory : topics.get(name);
+        return holder ? new Set(presentIds(holder.memories)) : null;
       },
     });
   } catch (error) {
@@ -282,19 +332,20 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   for (const vote of pass1.dropped) log(`dropped vote on unknown memory ${vote}`);
 
   for (const vote of pass1.votes) {
-    const topic = topics.get(vote.topic)!;
-    const outcome = recordVote(topic.ledger, vote.id, vote.kind, now);
+    const topic = topics.get(vote.topic);
+    const holder: MemoryHolder = vote.topic === USER_FILE ? userMemory : topic!;
+    const outcome = recordVote(holder.ledger, vote.id, vote.kind, now);
     if (outcome === "unknown") {
       log(`dropped vote on unknown memory ${vote.topic}#${vote.id}`);
       continue;
     }
-    topic.ledgerChanged = true;
+    holder.ledgerChanged = true;
     if (outcome === "retracted") {
-      topic.memories = withoutMemories(topic.memories, [vote.id]);
-      topic.bodyChanged = true;
-      removed.push({ topic: topic.name, id: vote.id, why: "retracted by the user" });
+      holder.memories = withoutMemories(holder.memories, [vote.id]);
+      holder.bodyChanged = true;
+      removed.push({ topic: vote.topic, id: vote.id, why: "retracted by the user" });
     }
-    if (vote.kind === "ignored") {
+    if (topic && vote.kind === "ignored") {
       topic.flags.add(IGNORED_FLAG);
       topic.needsMerge = true;
     }
@@ -366,13 +417,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
         name: topic.name,
         scope: topic.scope,
         description: topic.description,
-        memories: topic.memories.map((memory) => ({
-          id: memory.id ?? "new",
-          text: memory.text,
-          weight: memory.id ? memoryWeight(topic.ledger.memories[memory.id], now, config.halfLifeDays) : 0,
-          learned: memory.id ? (topic.ledger.memories[memory.id]?.learned ?? "") : "",
-          origin: memory.id ? (topic.ledger.memories[memory.id]?.origin ?? "human") : "human",
-        })),
+        memories: mergeMemoriesOf(topic, now, config.halfLifeDays),
         candidates,
         descriptionFlags: [...topic.flags],
         relatedTopics: sameScope(topic.scope, topic.name).map((other) => ({
@@ -389,7 +434,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     try {
       result = validateMerge(extractJson(await deps.model(prompt)), {
         knownIds: new Set(Object.keys(topic.ledger.memories)),
-        existingIds: memoryIds(serializeMemories(topic.memories)),
+        existingIds: presentIds(topic.memories),
         maxCharsPerTopic: config.maxCharsPerTopic,
       });
     } catch (error) {
@@ -401,14 +446,12 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       return false;
     }
     topic.description = result.description;
-    topic.memories = result.memories.map((memory) =>
-      memory.id === "new" ? { id: mintId(topic.ledger, sessionId, now), text: memory.text } : memory,
-    );
+    topic.memories = mintNewMemories(result.memories, topic.ledger, sessionId, now);
     for (const entry of result.removed) removed.push({ topic: topic.name, id: entry.id, why: entry.why });
     if (result.split) log(`${topic.name} could split: ${result.split}`);
     const evicted = selectMemoryEvictions(
       topic.ledger,
-      memoryIds(serializeMemories(topic.memories)),
+      presentIds(topic.memories),
       config.maxMemoriesPerTopic,
       now,
       config,
@@ -433,18 +476,36 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     let result: ReturnType<typeof validateUserMerge>;
     try {
       const prompt = buildUserMergePrompt(
-        { userMemory, candidates: userCandidates, maxUserChars: config.maxUserChars },
+        {
+          memories: mergeMemoriesOf(userMemory, now, config.halfLifeDays),
+          candidates: userCandidates,
+          maxUserChars: config.maxUserChars,
+        },
         loadPrompt("merge-user", packageRoot),
       );
-      result = validateUserMerge(extractJson(await deps.model(prompt)), config.maxUserChars, userMemory);
+      result = validateUserMerge(extractJson(await deps.model(prompt)), {
+        knownIds: new Set(Object.keys(userMemory.ledger.memories)),
+        existingIds: presentIds(userMemory.memories),
+      });
     } catch (error) {
       result = { ok: false, error: errorMessage(error) };
     }
     if (result.ok) {
-      writeAtomic(userPath, result.body === "" ? "" : `${result.body}\n`);
-      userChanged = true;
-      for (const entry of result.removed) removed.push({ topic: USER_FILE, id: entry.id, why: entry.why });
-    } else {
+      const ledger = structuredClone(userMemory.ledger);
+      const minted = mintNewMemories(result.memories, ledger, sessionId, now);
+      const fitted = selectSizeEvictions(ledger, minted, config.maxUserChars, now, config);
+      if (fitted.fits) {
+        userMemory.ledger = ledger;
+        userMemory.memories = fitted.memories;
+        userMemory.bodyChanged = true;
+        userMemory.ledgerChanged = true;
+        for (const entry of result.removed) removed.push({ topic: USER_FILE, id: entry.id, why: entry.why });
+        for (const id of fitted.evicted) removed.push({ topic: USER_FILE, id, why: "evicted at maxUserChars, lowest weight" });
+      } else {
+        result = { ok: false, error: `body is longer than ${config.maxUserChars} chars after evicting every unprotected memory` };
+      }
+    }
+    if (!result.ok) {
       rejected.push(`${USER_FILE}: ${result.error}`);
       log(`user.md merge rejected: ${result.error}`);
     }

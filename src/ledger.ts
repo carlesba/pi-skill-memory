@@ -118,6 +118,22 @@ export function isoDate(now: Date): string {
   return now.toISOString().slice(0, 10);
 }
 
+export function unknownEntry(): MemoryEntry {
+  return { source: "", origin: "human", learned: "", votes: [] };
+}
+
+export function adoptBodyIds(ledger: Ledger, ids: string[]): void {
+  reserveIdsAbove(ledger, ids);
+  for (const id of ids) ledger.memories[id] ??= unknownEntry();
+}
+
+export function adoptUnknownId(ledger: Ledger): string {
+  const id = `r${ledger.nextId}`;
+  ledger.nextId += 1;
+  ledger.memories[id] = unknownEntry();
+  return id;
+}
+
 export function mintId(ledger: Ledger, source: string, now: Date): string {
   const id = `r${ledger.nextId}`;
   ledger.nextId += 1;

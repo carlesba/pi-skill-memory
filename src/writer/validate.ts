@@ -57,7 +57,7 @@ export interface MergeResult {
 }
 
 export interface UserMergeResult {
-  body: string;
+  memories: Memory[];
   removed: Removal[];
 }
 
@@ -171,52 +171,61 @@ function checkBodyShape(body: string, maxChars: number): void {
   if (HEADING_LINE.test(body)) reject("body must not contain headings or rules");
 }
 
-export interface MergeContext {
+export interface MarkedBodyContext {
   knownIds: ReadonlySet<string>;
   existingIds: readonly string[];
+}
+
+export interface MergeContext extends MarkedBodyContext {
   maxCharsPerTopic: number;
+}
+
+function parseMarkedBody(body: string, rawRemoved: unknown, context: MarkedBodyContext): { memories: Memory[]; removed: Removal[] } {
+  const memories = parseMemories(body);
+  const seen = new Set<string>();
+  for (const memory of memories) {
+    if (memory.id === null) reject(`a paragraph does not end in ^r<N> or ^new: ${memory.text.slice(0, 60)}`);
+    if (memory.text === "") reject(`memory ^${memory.id} has no text`);
+    if (ID_MARKER.test(memory.text)) reject(`memory ^${memory.id} holds another id marker`);
+    if (memory.id === "new") continue;
+    if (!context.knownIds.has(memory.id)) reject(`unknown memory id ^${memory.id}`);
+    if (seen.has(memory.id)) reject(`memory id ^${memory.id} appears twice`);
+    seen.add(memory.id);
+  }
+  const removed = parseRemoved(rawRemoved);
+  const accounted = new Set(removed.map((entry) => entry.id));
+  const unaccounted = context.existingIds.filter((id) => !seen.has(id) && !accounted.has(id));
+  if (unaccounted.length > 0) {
+    reject(`memories dropped without a removed entry: ${unaccounted.map((id) => `^${id}`).join(", ")}`);
+  }
+  return { memories, removed };
+}
+
+function requiredBody(value: Record<string, unknown>): string {
+  if (typeof value.body !== "string") reject("body must be a string");
+  return value.body.trim();
 }
 
 export function validateMerge(value: unknown, context: MergeContext): Validated<MergeResult> {
   return runValidation(() => {
     if (!isRecord(value)) reject("pass 2 output must be an object");
     const description = requiredText(value, "description", MAX_DESCRIPTION_CHARS, "output").replace(/\s+/g, " ");
-    if (typeof value.body !== "string") reject("body must be a string");
-    const body = value.body.trim();
+    const body = requiredBody(value);
     checkBodyShape(body, context.maxCharsPerTopic);
-    const memories = parseMemories(body);
-    const seen = new Set<string>();
-    for (const memory of memories) {
-      if (memory.id === null) reject(`a paragraph does not end in ^r<N> or ^new: ${memory.text.slice(0, 60)}`);
-      if (memory.text === "") reject(`memory ^${memory.id} has no text`);
-      if (ID_MARKER.test(memory.text)) reject(`memory ^${memory.id} holds another id marker`);
-      if (memory.id === "new") continue;
-      if (!context.knownIds.has(memory.id)) reject(`unknown memory id ^${memory.id}`);
-      if (seen.has(memory.id)) reject(`memory id ^${memory.id} appears twice`);
-      seen.add(memory.id);
-    }
     const split = value.split;
     if (split !== undefined && split !== null && typeof split !== "string") reject("split must be a string or null");
     const splitText = typeof split === "string" && split.trim() !== "" ? split.trim() : null;
     if (splitText !== null && splitText.length > MAX_SPLIT_CHARS) reject(`split is longer than ${MAX_SPLIT_CHARS} chars`);
-    const removed = parseRemoved(value.removed);
-    const accounted = new Set(removed.map((entry) => entry.id));
-    const unaccounted = context.existingIds.filter((id) => !seen.has(id) && !accounted.has(id));
-    if (unaccounted.length > 0) {
-      reject(`memories dropped without a removed entry: ${unaccounted.map((id) => `^${id}`).join(", ")}`);
-    }
+    const { memories, removed } = parseMarkedBody(body, value.removed, context);
     return { description, memories, removed, split: splitText };
   });
 }
 
-export function validateUserMerge(value: unknown, maxUserChars: number, currentUserMemory: string): Validated<UserMergeResult> {
+export function validateUserMerge(value: unknown, context: MarkedBodyContext): Validated<UserMergeResult> {
   return runValidation(() => {
     if (!isRecord(value)) reject("user.md output must be an object");
-    if (typeof value.body !== "string") reject("body must be a string");
-    const body = value.body.trim();
-    checkBodyShape(body, maxUserChars);
-    if (ID_MARKER.test(body)) reject("user.md must not hold memory ids");
-    if (body === "" && currentUserMemory.trim() !== "") reject("body is empty but user.md is not");
-    return { body, removed: parseRemoved(value.removed) };
+    const body = requiredBody(value);
+    checkBodyShape(body, Number.MAX_SAFE_INTEGER);
+    return parseMarkedBody(body, value.removed, context);
   });
 }

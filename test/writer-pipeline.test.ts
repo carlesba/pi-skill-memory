@@ -78,6 +78,23 @@ function setup(memory: Record<string, unknown> = {}): Fixture {
   return { root, dir, cwd, config, sessionFile };
 }
 
+function writeUserMemory(dir: string, body: string, entries: Record<string, { learnedDaysAgo: number; applied: number[] }>, nextId?: number): void {
+  const daysAgo = (days: number) => new Date(NOW.getTime() - days * 86_400_000).toISOString();
+  const ledger = emptyLedger();
+  for (const [id, entry] of Object.entries(entries)) {
+    ledger.memories[id] = {
+      source: "old",
+      origin: "human",
+      learned: daysAgo(entry.learnedDaysAgo).slice(0, 10),
+      votes: entry.applied.map((age) => ({ kind: "applied" as const, ts: daysAgo(age) })),
+    };
+  }
+  ledger.nextId = nextId ?? Object.keys(entries).length + 1;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "user.md"), `${body}\n`);
+  saveLedger(join(dir, "user.ledger.json"), ledger);
+}
+
 function job(fixture: Fixture, overrides: Partial<WriterJob> = {}): WriterJob {
   return {
     config: fixture.config,
@@ -138,7 +155,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
         split: null,
       },
     },
-    user: { body: "Never add vitest; use node:test.", removed: [] },
+    user: { body: "Never add vitest; use node:test. ^new", removed: [] },
   });
   const jobFile = writeJob(job(fixture));
   const record = await runJob(jobFile, { model, now: () => NOW, resolver: fakeResolver({ [fixture.cwd]: "acme/app" }), home: fixture.root });
@@ -178,7 +195,10 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
 
   assert.equal(existsSync(join(fixture.dir, "memory-skills", "mem-any-old-notes")), false);
   assert.equal(existsSync(join(fixture.config.stateDir, "usage.jsonl")), false);
-  assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Never add vitest; use node:test.\n");
+  assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Never add vitest; use node:test. ^r1\n");
+  assert.deepEqual(loadLedger(join(fixture.dir, "user.ledger.json")).memories, {
+    r1: { source: "sess-1", origin: "human", learned: "2025-03-01", votes: [] },
+  });
   assert.match(readFileSync(join(fixture.dir, "proposals.md"), "utf8"), /^## 2025-03-01 proposal:git\n\n- Rule: Rebase before pushing\./);
   assert.match(readFileSync(join(fixture.config.stateDir, "writer.log"), "utf8"), /dropped vote on unknown memory mem-any-testing#r99/);
 
@@ -189,6 +209,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
   assert.match(message, /- mem-any-old-notes: stale, no loaded vote in 60 days/);
   assert.match(message, /- git/);
   assert.equal(git(fixture.dir, "status", "--porcelain"), "");
+  assert.match(git(fixture.dir, "ls-files"), /^user\.ledger\.json$/m);
   assert.doesNotMatch(git(fixture.dir, "ls-files"), /writer\.lock/);
 });
 
@@ -212,7 +233,7 @@ test("a rejected pass 2 leaves the topic untouched and the run records it", asyn
 test("a pass 2 or user.md answer that silently drops memories is rejected and changes nothing", async () => {
   const fixture = setup({ staleTopicDays: 100000 });
   const userPath = join(fixture.dir, "user.md");
-  writeFileSync(userPath, "Be terse.\n");
+  writeUserMemory(fixture.dir, "Be terse. ^r1", { r1: { learnedDaysAgo: 200, applied: [] } });
   const before = readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8");
   const { model } = scriptedModel({
     extract: {
@@ -227,9 +248,9 @@ test("a pass 2 or user.md answer that silently drops memories is rejected and ch
   });
   const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
   assert.match(result.rejected.join("\n"), /mem-any-testing: memories dropped without a removed entry: \^r2/);
-  assert.match(result.rejected.join("\n"), /user\.md: body is empty but user\.md is not/);
+  assert.match(result.rejected.join("\n"), /user\.md: memories dropped without a removed entry: \^r1/);
   assert.equal(readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8"), before);
-  assert.equal(readFileSync(userPath, "utf8"), "Be terse.\n");
+  assert.equal(readFileSync(userPath, "utf8"), "Be terse. ^r1\n");
 });
 
 test("a failed run keeps its job file so a queue can retry it", async () => {
@@ -352,4 +373,112 @@ test("a stale topic with a similar neighbour is merged into it through pass 2", 
   assert.equal(existsSync(join(fixture.dir, "memory-skills", "mem-any-old-notes")), false);
   const shell = parseTopic(readFileSync(topicSkillPath(fixture.dir, "mem-any-shell"), "utf8"))!;
   assert.deepEqual(shell.memories, [{ id: "r1", text: "Prefer short aliases." }]);
+});
+
+test("votes on user memories land in user.ledger.json and a retraction sweeps the memory", async () => {
+  const fixture = setup({ staleTopicDays: 100000 });
+  initGit(fixture.dir, fixture.root);
+  writeUserMemory(fixture.dir, "Be terse. ^r1\n\nPrefer small PRs. ^r2\n\nUse tabs. ^r3", {
+    r1: { learnedDaysAgo: 200, applied: [] },
+    r2: { learnedDaysAgo: 200, applied: [] },
+    r3: { learnedDaysAgo: 200, applied: [] },
+  }, 5);
+  git(fixture.dir, "add", "-A");
+  git(fixture.dir, "commit", "-qm", "seed");
+  const { model, prompts } = scriptedModel({
+    extract: {
+      candidates: [],
+      votes: [
+        { topic: "user.md", id: "r1", kind: "confirmed" },
+        { topic: "user.md", id: "r3", kind: "contradicted" },
+        { topic: "user.md", id: "r2", kind: "retracted" },
+        { topic: "user.md", id: "r9", kind: "applied" },
+      ],
+    },
+    merges: {},
+  });
+  const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.equal(result.outcome, "ok", result.error);
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0]!, /- r1: Be terse\.\n- r2: Prefer small PRs\.\n- r3: Use tabs\./);
+  assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Be terse. ^r1\n\nUse tabs. ^r3\n");
+  const ledger = loadLedger(join(fixture.dir, "user.ledger.json"));
+  assert.deepEqual(Object.keys(ledger.memories), ["r1", "r3"]);
+  assert.deepEqual(ledger.memories.r1!.votes, [{ kind: "confirmed", ts: NOW.toISOString() }]);
+  assert.deepEqual(ledger.memories.r3!.votes.map((vote) => vote.kind), ["contradicted"]);
+  assert.equal(ledger.nextId, 5);
+  assert.equal(result.committed, true);
+  assert.match(git(fixture.dir, "log", "-1", "--format=%B"), /- user\.md r2: retracted by the user/);
+  assert.equal(git(fixture.dir, "status", "--porcelain"), "");
+});
+
+test("the user merge sees origin, weight and age, mints ids that are never reused and evicts by weight past maxUserChars", async () => {
+  const fixture = setup({ staleTopicDays: 100000, maxUserChars: 65 });
+  writeUserMemory(fixture.dir, "Be terse. ^r1\n\nUse tabs. ^r2\n\nPrefer small PRs. ^r3", {
+    r1: { learnedDaysAgo: 200, applied: [10] },
+    r2: { learnedDaysAgo: 200, applied: [] },
+    r3: { learnedDaysAgo: 5, applied: [] },
+  }, 9);
+  const { model, prompts } = scriptedModel({
+    extract: {
+      candidates: [{ rule: "Answer in one line.", why: "Terse.", evidence: "one line please, everywhere", scope: "generic", target: "user.md" }],
+      votes: [],
+    },
+    merges: {},
+    user: { body: "Be terse. ^r1\n\nUse tabs. ^r2\n\nPrefer small PRs. ^r3\n\nAnswer in one line. ^new", removed: [] },
+  });
+  const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.deepEqual(result.rejected, []);
+  const userPrompt = prompts.find((prompt) => prompt.startsWith("# Rewrite the user memory"))!;
+  assert.match(userPrompt, /- \^r1 \(origin human, weight 0\.9\d, learned 2024-08-13\): Be terse\./);
+  assert.match(userPrompt, /- \^r3 \(origin human, weight 0\.00, learned 2025-02-24\): Prefer small PRs\./);
+  assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Be terse. ^r1\n\nPrefer small PRs. ^r3\n\nAnswer in one line. ^r9\n");
+  const ledger = loadLedger(join(fixture.dir, "user.ledger.json"));
+  assert.deepEqual(Object.keys(ledger.memories).sort(), ["r1", "r3", "r9"]);
+  assert.equal(ledger.memories.r9!.source, "sess-1");
+  assert.equal(ledger.nextId, 10);
+});
+
+test("a user merge that cannot fit maxUserChars or names an unknown id is rejected and changes nothing", async () => {
+  const run = async (maxUserChars: number, body: string) => {
+    const fixture = setup({ staleTopicDays: 100000, maxUserChars });
+    writeUserMemory(fixture.dir, "Be terse. ^r1\n\nUse tabs. ^r2\n\nPrefer small PRs. ^r3", {
+      r1: { learnedDaysAgo: 200, applied: [10] },
+      r2: { learnedDaysAgo: 200, applied: [] },
+      r3: { learnedDaysAgo: 5, applied: [] },
+    }, 4);
+    const before = readFileSync(join(fixture.dir, "user.ledger.json"), "utf8");
+    const { model } = scriptedModel({
+      extract: {
+        candidates: [{ rule: "Answer in one line.", why: "Terse.", evidence: "one line please, everywhere", scope: "generic", target: "user.md" }],
+        votes: [],
+      },
+      merges: {},
+      user: { body, removed: [] },
+    });
+    const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+    assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Be terse. ^r1\n\nUse tabs. ^r2\n\nPrefer small PRs. ^r3\n");
+    assert.equal(readFileSync(join(fixture.dir, "user.ledger.json"), "utf8"), before);
+    return result.rejected.join("\n");
+  };
+  const all = "Be terse. ^r1\n\nUse tabs. ^r2\n\nPrefer small PRs. ^r3\n\nAnswer in one line. ^new";
+  assert.match(await run(40, all), /user\.md: body is longer than 40 chars after evicting every unprotected memory/);
+  assert.match(await run(4000, `${all}\n\nInvented. ^r7`), /user\.md: unknown memory id \^r7/);
+});
+
+test("a user.md with unmarked paragraphs and no ledger gets ids adopted instead of crashing", async () => {
+  const fixture = setup({ staleTopicDays: 100000 });
+  writeFileSync(join(fixture.dir, "user.md"), "Be terse.\n\nPrefer small PRs. ^r4\n");
+  const { model, prompts } = scriptedModel({
+    extract: { candidates: [], votes: [{ topic: "user.md", id: "r5", kind: "applied" }] },
+    merges: {},
+  });
+  const result = await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.equal(result.outcome, "ok", result.error);
+  assert.match(prompts[0]!, /- r5: Be terse\.\n- r4: Prefer small PRs\./);
+  assert.equal(readFileSync(join(fixture.dir, "user.md"), "utf8"), "Be terse. ^r5\n\nPrefer small PRs. ^r4\n");
+  const ledger = loadLedger(join(fixture.dir, "user.ledger.json"));
+  assert.equal(ledger.nextId, 6);
+  assert.deepEqual(ledger.memories.r4, { source: "", origin: "human", learned: "", votes: [] });
+  assert.deepEqual(ledger.memories.r5!.votes.map((vote) => vote.kind), ["applied"]);
 });

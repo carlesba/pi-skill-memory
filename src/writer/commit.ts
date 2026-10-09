@@ -11,7 +11,7 @@ export interface GitResult {
 
 export type GitExec = (args: string[], cwd: string) => GitResult;
 
-export const COMMIT_PATHS = ["user.md", MEMORY_SKILLS_DIR, "proposals.md"];
+export const COMMIT_PATHS = ["user.md", "user.ledger.json", MEMORY_SKILLS_DIR, "proposals.md"];
 
 export const runGit: GitExec = (args, cwd) => {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 });

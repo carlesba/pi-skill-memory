@@ -9,6 +9,7 @@ import {
   jaccard,
   memoryWeight,
   selectMemoryEvictions,
+  selectSizeEvictions,
   selectStaleTopics,
   selectTopicEvictions,
   tokenize,
@@ -91,6 +92,27 @@ test("never evicts memories younger than protectNewDays, keeping over cap if all
   const fresh = ledgerWith({ r1: { learnedDaysAgo: 1, applied: [] }, r2: { learnedDaysAgo: 2, applied: [] } });
   assert.deepEqual(selectMemoryEvictions(fresh, ["r1", "r2"], 1, now, settings), []);
   assert.deepEqual(selectMemoryEvictions(fresh, ["r1", "r2", "r9"], 2, now, settings), ["r9"]);
+});
+
+test("evicts by size lowest weight first, skipping protected memories, and reports when it cannot fit", () => {
+  const ledger = ledgerWith({
+    r1: { learnedDaysAgo: 200, applied: [0] },
+    r2: { learnedDaysAgo: 200, applied: [] },
+    r3: { learnedDaysAgo: 5, applied: [] },
+  });
+  const memories = [
+    { id: "r1", text: "Be terse." },
+    { id: "r2", text: "Use tabs." },
+    { id: "r3", text: "Prefer small PRs." },
+  ];
+  assert.deepEqual(selectSizeEvictions(ledger, memories, 100, now, settings), { evicted: [], memories, fits: true });
+  const one = selectSizeEvictions(ledger, memories, 40, now, settings);
+  assert.deepEqual(one.evicted, ["r2"]);
+  assert.deepEqual(one.memories.map((memory) => memory.id), ["r1", "r3"]);
+  assert.equal(one.fits, true);
+  const stuck = selectSizeEvictions(ledger, memories, 10, now, settings);
+  assert.deepEqual(stuck.evicted, ["r2", "r1"]);
+  assert.equal(stuck.fits, false);
 });
 
 test("evicts topics per scope cap, lowest weight first, skipping new topics", () => {

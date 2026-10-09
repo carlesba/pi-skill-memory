@@ -3,7 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { MemoryOrigin } from "../ledger.ts";
 import type { SkillIndexEntry } from "../skill-index.ts";
-import type { Memory, Scope } from "../topics.ts";
+import { parseMemories, type Memory, type Scope } from "../topics.ts";
 import {
   MAX_CANDIDATES,
   MAX_DESCRIPTION_CHARS,
@@ -91,6 +91,14 @@ function renderLoadedTopics(topics: LoadedTopic[]): string {
     .join("\n\n");
 }
 
+export function renderUserMemory(userMemory: string): string {
+  const memories = parseMemories(userMemory);
+  if (memories.length === 0) return "(empty)";
+  return memories
+    .map((memory) => (memory.id === null || memory.id === "new" ? `- ${memory.text}` : `- ${memory.id}: ${memory.text}`))
+    .join("\n");
+}
+
 export function renderTranscript(turns: SessionTurn[]): string {
   if (turns.length === 0) return "(empty)";
   return turns
@@ -132,7 +140,7 @@ export function buildExtractPrompt(
     maxWhyChars: MAX_WHY_CHARS,
     maxEvidenceWords: MAX_EVIDENCE_WORDS,
     repos: listOrNone(input.repos.map((repo) => `- ${repo}`)),
-    userMemory: input.userMemory.trim() === "" ? "(empty)" : input.userMemory.trim(),
+    userMemory: renderUserMemory(input.userMemory),
     topicIndex: boundIndex(
       input.topics.map((topic) => `- ${topic.name} (${topic.scope}): ${indexDescription(topic.description)}`),
       MAX_TOPIC_INDEX_CHARS,
@@ -183,6 +191,15 @@ function renderCandidates(candidates: MergeCandidate[]): string {
   );
 }
 
+function renderMergeMemories(memories: MergeMemory[]): string {
+  return listOrNone(
+    memories.map(
+      (memory) =>
+        `- ^${memory.id} (origin ${memory.origin}, weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
+    ),
+  );
+}
+
 export function buildMergePrompt(input: MergeInput, template: string = loadPrompt("merge")): string {
   return fillTemplate(template, {
     maxDescriptionChars: MAX_DESCRIPTION_CHARS,
@@ -192,19 +209,14 @@ export function buildMergePrompt(input: MergeInput, template: string = loadPromp
     scope: input.scope,
     description: input.description === "" ? "(new topic, write one)" : input.description,
     descriptionFlags: input.descriptionFlags.length === 0 ? "(none)" : input.descriptionFlags.join("; "),
-    memories: listOrNone(
-      input.memories.map(
-        (memory) =>
-          `- ^${memory.id} (origin ${memory.origin}, weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
-      ),
-    ),
+    memories: renderMergeMemories(input.memories),
     candidates: renderCandidates(input.candidates),
     relatedTopics: listOrNone(input.relatedTopics.map((topic) => `- ../${topic.name}/SKILL.md: ${topic.description}`)),
   });
 }
 
 export interface UserMergeInput {
-  userMemory: string;
+  memories: MergeMemory[];
   candidates: MergeCandidate[];
   maxUserChars: number;
 }
@@ -212,7 +224,7 @@ export interface UserMergeInput {
 export function buildUserMergePrompt(input: UserMergeInput, template: string = loadPrompt("merge-user")): string {
   return fillTemplate(template, {
     maxUserChars: input.maxUserChars,
-    userMemory: input.userMemory.trim() === "" ? "(empty)" : input.userMemory.trim(),
+    memories: renderMergeMemories(input.memories),
     candidates: renderCandidates(input.candidates),
   });
 }

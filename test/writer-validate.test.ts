@@ -80,10 +80,17 @@ test("pass 2 rejects unknown ids, oversized bodies, headings and untagged paragr
   assert.equal(merge("A. ^r1", { description: "" }).ok, false);
 });
 
-test("user.md mode rejects ids and bodies over maxUserChars", () => {
-  assert.ok(validateUserMerge({ body: "Be terse.\n\nPrefer small PRs.", removed: [] }, 100, "").ok);
-  assert.equal(validateUserMerge({ body: "Be terse. ^r1" }, 100, "").ok, false);
-  assert.equal(validateUserMerge({ body: "x".repeat(101) }, 100, "").ok, false);
+test("user.md mode takes ids like a topic and rejects unknown ids and unmarked paragraphs", () => {
+  const user = (body: string, removed: { id: string; why: string }[] = []) =>
+    validateUserMerge({ body, removed }, { knownIds: new Set(["r1", "r2"]), existingIds: ["r1", "r2"] });
+  const accepted = user("Be terse. ^r1\n\nPrefer small PRs. ^new", [{ id: "r2", why: "merged into r1" }]);
+  assert.ok(accepted.ok);
+  assert.deepEqual(accepted.memories, [{ id: "r1", text: "Be terse." }, { id: "new", text: "Prefer small PRs." }]);
+  assert.match((user("Be terse. ^r7\n\nA. ^r1\n\nB. ^r2") as { error: string }).error, /unknown memory id \^r7/);
+  assert.match((user("Be terse.\n\nA. ^r1\n\nB. ^r2") as { error: string }).error, /does not end in \^r<N> or \^new/);
+  assert.equal(user("A. ^r1\n\nA again. ^r1", [{ id: "r2", why: "merged" }]).ok, false);
+  assert.equal(user("# Rules\n\nA. ^r1\n\nB. ^r2").ok, false);
+  assert.ok(user(`${"x".repeat(5000)} ^r1\n\nB. ^r2`).ok);
 });
 
 test("pass 2 rejects dropping an existing memory that removed does not account for", () => {
@@ -109,11 +116,13 @@ test("pass 2 rejects dropping an existing memory that removed does not account f
   assert.ok(merge("Use node:test. ^r1\n\nA. ^r2\n\nB. ^r3", []).ok);
 });
 
-test("user.md mode rejects an empty body when user.md has content", () => {
-  assert.equal(validateUserMerge({ body: "", removed: [] }, 100, "Be terse.\n").ok, false);
-  assert.equal(validateUserMerge({ body: "  ", removed: [{ id: "Be terse", why: "withdrawn" }] }, 100, "Be terse.").ok, false);
-  assert.ok(validateUserMerge({ body: "", removed: [] }, 100, "\n").ok);
-  assert.ok(validateUserMerge({ body: "Be brief.", removed: [{ id: "Be terse", why: "reworded" }] }, 100, "Be terse.").ok);
+test("user.md mode rejects dropping an existing memory that removed does not account for", () => {
+  const user = (body: string, removed: { id: string; why: string }[]) =>
+    validateUserMerge({ body, removed }, { knownIds: new Set(["r1", "r2"]), existingIds: ["r1", "r2"] });
+  assert.match((user("", []) as { error: string }).error, /dropped without a removed entry: \^r1, \^r2/);
+  assert.match((user("Be brief. ^new", [{ id: "r1", why: "reworded" }]) as { error: string }).error, /\^r2/);
+  assert.ok(user("", [{ id: "r1", why: "retracted" }, { id: "r2", why: "retracted" }]).ok);
+  assert.ok(validateUserMerge({ body: "", removed: [] }, { knownIds: new Set(), existingIds: [] }).ok);
 });
 
 test("writes are confined to the memory dir, including through symlinks", () => {

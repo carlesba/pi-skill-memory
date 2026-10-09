@@ -46,9 +46,29 @@ test("the packaged prompts fill without leftover placeholders", () => {
   assert.match(merge, /\^r2 \(origin observed, weight 3\.00, learned 2025-02-01\): The CI runs on Node 22\./);
   assert.match(merge, /A human memory always beats an observed one, whatever their age or weight\./);
   assert.doesNotMatch(merge, /\{[a-zA-Z]+\}/);
-  const user = buildUserMergePrompt({ userMemory: "Be terse.", candidates: [], maxUserChars: 4000 });
+  const user = buildUserMergePrompt({
+    memories: [{ id: "r4", text: "Be terse.", weight: 2, learned: "2025-01-05", origin: "human" }],
+    candidates: [{ rule: "Answer in one line.", why: "Terse.", evidence: "one line please" }],
+    maxUserChars: 4000,
+  });
   assert.match(user, /at most 4000 characters/);
+  assert.match(user, /- \^r4 \(origin human, weight 2\.00, learned 2025-01-05\): Be terse\./);
+  assert.match(user, /A human memory always beats an observed one, whatever their age or weight\./);
+  assert.match(user, /Answer in one line\./);
   assert.doesNotMatch(user, /\{[a-zA-Z]+\}/);
+});
+
+test("pass 1 shows user memories with their ids and asks for votes on them under user.md", () => {
+  const prompt = buildExtractPrompt({
+    repos: [],
+    userMemory: "Be terse. ^r1\n\nPrefer small PRs. ^r4",
+    topics: [],
+    skills: [],
+    loadedTopics: [],
+    turns: [{ user: "hello", human: true, assistant: null }],
+  });
+  assert.match(prompt, /## User memory \(user\.md\)\n\n- r1: Be terse\.\n- r4: Prefer small PRs\./);
+  assert.match(prompt, /a vote on a user memory names the topic `user\.md`/);
 });
 
 test("bounds the transcript by dropping oldest assistant texts, then truncating oldest user messages", () => {
