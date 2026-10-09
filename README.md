@@ -14,7 +14,7 @@ Everything lives in the memory directory (the `dir` setting).
 
 - `user.md` holds memory about how you work in any repository.
 - `memory-skills/<topic>/SKILL.md` is one topic skill. Its frontmatter carries `name`, `description`, `metadata.scope` (`generic` or `repo:<owner>/<name>`) and `metadata.updated`. The body is one short paragraph per memory, each ending in a block id such as `^r7`. Topic names look like `mem-apollo-state` for a repository topic and `mem-any-react-components` for a generic one, and the directory is named after the skill.
-- `memory-skills/<topic>/ledger.json` records where each memory came from and the votes it has received. It is never shown to the model.
+- `memory-skills/<topic>/ledger.json` records where each memory came from, its origin and the votes it has received. It is never shown to the model.
 - `proposals.md` collects lessons that belong in one of your hand-written skills. The writer never edits those skills; it proposes the change for you to review.
 
 The state directory (the `stateDir` setting) sits outside the memory directory because its files change constantly. It holds `usage.jsonl` (which topics were listed, reminded and loaded), `runs.jsonl` (one line per writer run and its outcome), `writer.log`, and the queued writer jobs.
@@ -33,13 +33,21 @@ The extension records a `reminded` event for each topic named in a reminder and 
 
 ## Write path
 
-When a session ends, the extension queues a writer for that session's transcript and returns at once, so quitting pi is never delayed. It skips sessions with fewer than `minUserMessages` user messages, and it skips processes where any environment variable in `skipWriteWhenEnv` is set, which by default keeps scheduled jobs and subagents from writing memory. Reading memory still works in those processes. Reloading the extension does not queue a writer, because the session continues.
+When a session ends, the extension queues a writer for that session's transcript and returns at once, so quitting pi is never delayed. It skips sessions with fewer than `minUserMessages` messages a human typed, and it skips processes where any environment variable in `skipWriteWhenEnv` is set. That list is empty by default, because the package does not know which other tools run pi on your behalf; add their variables when you want to switch the writer off for them. Reading memory still works in skipped processes. Reloading the extension does not queue a writer, because the session continues.
+
+### Learning only from what a human typed
+
+A session's user-role messages are not all written by you. A scheduler, a script or a parent agent that starts pi writes its brief as a user message too, and a lesson taken from such a brief would record a program's instructions as your preferences. The package therefore learns only from messages a human typed, and it decides that from where pi says each message came from rather than from who launched the process, which it cannot know.
+
+pi reports every prompt with a source: `interactive` for the editor, `rpc` for a client of RPC mode, and `extension` for a message an extension sent. The extension records the source and the run mode of each user message as a custom entry in the session file, which keeps the record with the transcript across `/resume` and forks and lets the writer read it after pi has exited. A message counts as human when its source is listed in `learnFromSources`, which is `["interactive"]` by default. pi also labels prompts given to `pi -p` and `pi --mode json` as `interactive`, so an `interactive` message counts only when pi runs its terminal UI. As a result an autonomous run in print or JSON mode never qualifies, whoever launched it. Add `rpc` to `learnFromSources` when a person types into an RPC client such as an editor integration.
+
+`minUserMessages` counts only human messages, so a session with none is never written. The writer still shows the model the other user-role messages, labelled as instructions from another program, so it understands the task, and the extract prompt forbids taking a lesson, a vote or an evidence quote from them. Sessions recorded before this version carry no source entries and are treated as having no human messages.
 
 The writer takes a lock on `.writer.lock` in the memory directory, so writers from several sessions run one after another. The writer holding the lock refreshes its timestamp every minute; another writer takes the lock over only when the holder's process is gone or the timestamp has not been refreshed for 5 minutes, so a long run is never interrupted. It then runs two passes through `pi -p` with extensions, tools, skills and context files turned off, using `writerModel` when it is set and pi's default model otherwise.
 
-The first pass reads a bounded digest of the session: every user message, the final assistant text before each of your messages, the repositories the session touched, the index of memory topics and hand-written skills, `user.md`, and the full text of the topics loaded in that session. It returns candidate lessons with their evidence and a target (`user.md`, an existing topic, a new topic, or a proposal for a hand-written skill), plus votes on the memories it was shown. A lesson counts only when it came from you, through a statement, a correction or a choice, and when it will still be true next month.
+The first pass reads a bounded digest of the session: every user message, labelled as yours or as instructions from another program, the final assistant text before each of your messages, the repositories the session touched, the index of memory topics and hand-written skills, `user.md`, and the full text of the topics loaded in that session. It returns candidate lessons with their evidence and a target (`user.md`, an existing topic, a new topic, or a proposal for a hand-written skill), plus votes on the memories it was shown. A lesson counts only when it came from you, through a statement, a correction or a choice, and when it will still be true next month.
 
-The second pass rewrites each touched topic as a whole file. It merges restatements, resolves conflicts by keeping one memory (an explicit statement beats an inference, newer evidence beats older, and higher weight beats lower), and reports what it replaced and why. The extension validates every answer before applying it: the JSON shape, size limits, frontmatter, that every memory id exists, that every existing memory missing from the answer is listed with a reason in what it replaced, that a non-empty `user.md` is not rewritten as empty, and that every write stays inside the memory directory. A rejected answer leaves the topic untouched and is recorded in `runs.jsonl`.
+The second pass rewrites each touched topic as a whole file. It sees each memory's origin, weight and age. It merges restatements, resolves conflicts by keeping one memory (a human memory beats an observed one whatever their age or weight, and between two of the same origin an explicit statement beats an inference, newer evidence beats older, and higher weight beats lower), and reports what it replaced and why. The extension validates every answer before applying it: the JSON shape, size limits, frontmatter, that every memory id exists, that every existing memory missing from the answer is listed with a reason in what it replaced, that a non-empty `user.md` is not rewritten as empty, and that every write stays inside the memory directory. A rejected answer leaves the topic untouched and is recorded in `runs.jsonl`.
 
 ### Runners
 
@@ -50,6 +58,8 @@ The `pueue` runner adds the writer to a [pueue](https://github.com/Nukesor/pueue
 ## Ledger, weights and eviction
 
 The extension, not the model, owns the ledger. It mints memory ids from a counter that only increases, so an id is never reused, and after every write it deletes ledger entries whose id is no longer in the topic.
+
+Each memory in the ledger has an `origin`. A `human` memory came from something you said, and every memory the writer creates today is `human`; ledgers written before the field existed read as `human` too. An `observed` memory would be a fact the agent saw in the work rather than something you stated. The writer does not learn observed facts yet: the value is reserved for a later version, and the merge prompt already ranks a human memory above an observed one.
 
 Votes come from the first pass and from usage. `applied` means a memory bore on the work and you did not correct it, `confirmed` means a new lesson repeated it, `ignored` means the agent did not follow it and you corrected the agent toward it, `contradicted` means the agent followed it and you corrected the agent away from it, and `retracted` means you withdrew it, which deletes it at once. A memory's weight is the sum of its votes (applied, confirmed and ignored count +1, contradicted counts −2), each halved every `halfLifeDays`. A topic's weight adds its decayed `loaded` events to its memories' weights. Each ledger keeps the last 20 votes per memory, and for the topic the last 20 `loaded` and the last 20 `reminded` events separately, so frequent reminders never push out the record of a topic being loaded. `reminded` events carry no weight and do not count as loads. An `ignored` vote also tells the writer to reword the topic's description so it gets loaded at the right moment.
 
@@ -66,7 +76,7 @@ Settings live under the `memory` key in pi's `settings.json`, either `~/.pi/agen
 | `writerModel` | unset (pi's default model) | The model the writer passes to `pi -p --model`. |
 | `runner` | `detached` | `detached` or `pueue`. |
 | `pueueGroup` | `pi-skill-memory` | The pueue group the writer uses. |
-| `minUserMessages` | `3` | Sessions with fewer user messages are not written. |
+| `minUserMessages` | `3` | Sessions with fewer messages a human typed are not written. |
 | `maxCharsPerTopic` | `4000` | Maximum size of a topic body. |
 | `maxMemoriesPerTopic` | `12` | Memories per topic before eviction. |
 | `maxGenericTopics` | `10` | Generic topics before new lessons are routed to existing ones. |
@@ -76,7 +86,8 @@ Settings live under the `memory` key in pi's `settings.json`, either `~/.pi/agen
 | `protectNewDays` | `30` | Memories younger than this are never evicted. |
 | `staleTopicDays` | `60` | A topic not loaded for this long is merged or removed. |
 | `autoCommit` | `true` | Commit each write when the memory directory is in a git repository. |
-| `skipWriteWhenEnv` | `["NIGHTSHIFT_JOB", "PI_SUBAGENT_AGENT_ID"]` | Environment variables that turn the writer off for a process. |
+| `skipWriteWhenEnv` | `[]` | Environment variables that turn the writer off for a process when any of them is set. |
+| `learnFromSources` | `["interactive"]` | The pi input sources (`interactive`, `rpc`, `extension`) whose messages count as typed by a human. `interactive` counts only in the terminal UI. |
 
 A settings file that keeps memory in a dotfiles repository and uses pueue looks like this:
 
@@ -112,7 +123,7 @@ pi loads the extension's TypeScript directly. The writer runs as a separate Node
 
 - `/memory status` shows the memory and state directories, whether `user.md` exists, how many topics each scope has, the last writer run with its outcome, and the runner, including whether `pueue` is on `PATH`. `/memory` on its own does the same.
 - `/memory explain` shows which topics pi currently lists and why (pi refreshes that listing at startup and on `/reload`, not on `/new` or `/resume`, so it can still reflect the directory pi started in), and which topics were named in reminders and what triggered each one: the tool call and path, or the word in your prompt.
-- `/memory write` queues the writer for the current session now, even when the session has fewer than `minUserMessages` user messages or a variable in `skipWriteWhenEnv` is set. Quitting afterwards does not queue the same session again unless you have continued it.
+- `/memory write` queues the writer for the current session now, even when the session has fewer than `minUserMessages` human messages or a variable in `skipWriteWhenEnv` is set. Quitting afterwards does not queue the same session again unless you have continued it.
 
 ## License
 
