@@ -57,8 +57,8 @@ function setup(memory: Record<string, unknown> = {}): Fixture {
   );
   const testingLedger = emptyLedger();
   testingLedger.nextId = 3;
-  testingLedger.memories.r1 = { source: "old", learned: "2025-01-01", votes: [] };
-  testingLedger.memories.r2 = { source: "old", learned: "2025-01-01", votes: [] };
+  testingLedger.memories.r1 = { source: "old", origin: "human", learned: "2025-01-01", votes: [] };
+  testingLedger.memories.r2 = { source: "old", origin: "human", learned: "2025-01-01", votes: [] };
   writeTopic(
     dir,
     "mem-any-testing",
@@ -72,7 +72,7 @@ function setup(memory: Record<string, unknown> = {}): Fixture {
   );
   const oldLedger = emptyLedger("2024-01-01T00:00:00.000Z");
   oldLedger.nextId = 2;
-  oldLedger.memories.r1 = { source: "old", learned: "2024-01-01", votes: [] };
+  oldLedger.memories.r1 = { source: "old", origin: "human", learned: "2024-01-01", votes: [] };
   writeTopic(dir, "mem-any-old-notes", "generic", "Shell alias conventions.", [{ id: "r1", text: "Prefer short aliases." }], oldLedger);
   const sessionFile = writeFixtureSession(join(root, "session.jsonl"), { cwd, dir });
   return { root, dir, cwd, config, sessionFile };
@@ -156,6 +156,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
   assert.match(extractPrompt, /- git: Git workflow rules/);
   const testingPrompt = prompts.find((prompt) => prompt.includes("- Name: mem-any-testing"))!;
   assert.doesNotMatch(testingPrompt, /\^r2/);
+  assert.match(testingPrompt, /- \^r1 \(origin human, weight /);
 
   const created = parseTopic(readFileSync(topicSkillPath(fixture.dir, "mem-any-react-components"), "utf8"))!;
   assert.equal(created.scope, "generic");
@@ -165,7 +166,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
   const createdLedger = loadLedger(topicLedgerPath(fixture.dir, "mem-any-react-components"));
   assert.equal(createdLedger.nextId, 3);
   assert.equal(createdLedger.topic.created, NOW.toISOString());
-  assert.deepEqual(createdLedger.memories.r1, { source: "sess-1", learned: "2025-03-01", votes: [] });
+  assert.deepEqual(createdLedger.memories.r1, { source: "sess-1", origin: "human", learned: "2025-03-01", votes: [] });
 
   const testing = parseTopic(readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8"))!;
   assert.deepEqual(testing.memories, [{ id: "r1", text: "Use node:test for unit tests, never vitest." }]);

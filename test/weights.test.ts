@@ -46,8 +46,8 @@ test("topic weight adds decayed loaded votes to its memories' weights", () => {
       ],
     },
     memories: {
-      r1: { source: "s", learned: daysAgo(100), votes: [{ kind: "applied", ts: daysAgo(0) }] },
-      r2: { source: "s", learned: daysAgo(100), votes: [{ kind: "contradicted", ts: daysAgo(0) }] },
+      r1: { source: "s", origin: "human", learned: daysAgo(100), votes: [{ kind: "applied", ts: daysAgo(0) }] },
+      r2: { source: "s", origin: "human", learned: daysAgo(100), votes: [{ kind: "contradicted", ts: daysAgo(0) }] },
     },
   };
   close(topicWeight(ledger, now, 90), 0.5 + 1 - 2);
@@ -58,6 +58,7 @@ function ledgerWith(memories: Record<string, { learnedDaysAgo: number; applied: 
   for (const [id, spec] of Object.entries(memories)) {
     ledger.memories[id] = {
       source: "s",
+      origin: "human",
       learned: daysAgo(spec.learnedDaysAgo).slice(0, 10),
       votes: spec.applied.map((age) => ({ kind: "applied" as const, ts: daysAgo(age) })),
     };

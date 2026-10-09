@@ -14,8 +14,13 @@ export interface Vote<K extends string> {
   ts: string;
 }
 
+export const MEMORY_ORIGINS = ["human", "observed"] as const;
+
+export type MemoryOrigin = (typeof MEMORY_ORIGINS)[number];
+
 export interface MemoryEntry {
   source: string;
+  origin: MemoryOrigin;
   learned: string;
   votes: Vote<StoredMemoryVoteKind>[];
 }
@@ -81,6 +86,7 @@ export function parseLedger(raw: string): Ledger {
       highest = Math.max(highest, number);
       memories[id] = {
         source: typeof entry.source === "string" ? entry.source : "",
+        origin: entry.origin === "observed" ? "observed" : "human",
         learned: typeof entry.learned === "string" ? entry.learned : "",
         votes: readVotes(entry.votes, storedKinds),
       };
@@ -115,7 +121,7 @@ export function isoDate(now: Date): string {
 export function mintId(ledger: Ledger, source: string, now: Date): string {
   const id = `r${ledger.nextId}`;
   ledger.nextId += 1;
-  ledger.memories[id] = { source, learned: isoDate(now), votes: [] };
+  ledger.memories[id] = { source, origin: "human", learned: isoDate(now), votes: [] };
   return id;
 }
 

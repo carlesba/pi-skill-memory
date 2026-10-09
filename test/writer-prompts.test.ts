@@ -32,14 +32,19 @@ test("the packaged prompts fill without leftover placeholders", () => {
     name: "mem-any-testing",
     scope: "generic",
     description: "",
-    memories: [{ id: "r1", text: "Use node:test.", weight: 1, learned: "2025-01-01" }],
+    memories: [
+      { id: "r1", text: "Use node:test.", weight: 1, learned: "2025-01-01", origin: "human" },
+      { id: "r2", text: "The CI runs on Node 22.", weight: 3, learned: "2025-02-01", origin: "observed" },
+    ],
     candidates: [{ rule: "Never vitest.", why: "Zero deps.", evidence: "never vitest" }],
     descriptionFlags: [],
     relatedTopics: [],
     maxCharsPerTopic: 4000,
     maxMemoriesPerTopic: 12,
   });
-  assert.match(merge, /\^r1 \(weight 1\.00, learned 2025-01-01\): Use node:test\./);
+  assert.match(merge, /\^r1 \(origin human, weight 1\.00, learned 2025-01-01\): Use node:test\./);
+  assert.match(merge, /\^r2 \(origin observed, weight 3\.00, learned 2025-02-01\): The CI runs on Node 22\./);
+  assert.match(merge, /A human memory always beats an observed one, whatever their age or weight\./);
   assert.doesNotMatch(merge, /\{[a-zA-Z]+\}/);
   const user = buildUserMergePrompt({ userMemory: "Be terse.", candidates: [], maxUserChars: 4000 });
   assert.match(user, /at most 4000 characters/);

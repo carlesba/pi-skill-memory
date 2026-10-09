@@ -123,7 +123,7 @@ function loadTopics(dir: string): Map<string, TopicState> {
     const ledger = loadLedger(confinedTopicPath(dir, name, "ledger.json"));
     const bodyIds = memoryIds(serializeMemories(parsed.memories));
     reserveIdsAbove(ledger, bodyIds);
-    for (const id of bodyIds) ledger.memories[id] ??= { source: "", learned: "", votes: [] };
+    for (const id of bodyIds) ledger.memories[id] ??= { source: "", origin: "human", learned: "", votes: [] };
     topics.set(name, {
       name,
       scope: parsed.scope,
@@ -371,6 +371,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
           text: memory.text,
           weight: memory.id ? memoryWeight(topic.ledger.memories[memory.id], now, config.halfLifeDays) : 0,
           learned: memory.id ? (topic.ledger.memories[memory.id]?.learned ?? "") : "",
+          origin: memory.id ? (topic.ledger.memories[memory.id]?.origin ?? "human") : "human",
         })),
         candidates,
         descriptionFlags: [...topic.flags],

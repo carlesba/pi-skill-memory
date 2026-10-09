@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { MemoryOrigin } from "../ledger.ts";
 import type { SkillIndexEntry } from "../skill-index.ts";
 import type { Memory, Scope } from "../topics.ts";
 import {
@@ -158,6 +159,7 @@ export interface MergeMemory {
   text: string;
   weight: number;
   learned: string;
+  origin: MemoryOrigin;
 }
 
 export interface MergeInput {
@@ -192,7 +194,8 @@ export function buildMergePrompt(input: MergeInput, template: string = loadPromp
     descriptionFlags: input.descriptionFlags.length === 0 ? "(none)" : input.descriptionFlags.join("; "),
     memories: listOrNone(
       input.memories.map(
-        (memory) => `- ^${memory.id} (weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
+        (memory) =>
+          `- ^${memory.id} (origin ${memory.origin}, weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
       ),
     ),
     candidates: renderCandidates(input.candidates),

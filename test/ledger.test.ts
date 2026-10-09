@@ -24,7 +24,7 @@ test("mints monotonic ids that are never reused after deletion", () => {
   const ledger = emptyLedger();
   assert.equal(mintId(ledger, "s1", now), "r1");
   assert.equal(mintId(ledger, "s1", now), "r2");
-  assert.deepEqual(ledger.memories.r1, { source: "s1", learned: "2025-06-01", votes: [] });
+  assert.deepEqual(ledger.memories.r1, { source: "s1", origin: "human", learned: "2025-06-01", votes: [] });
   sweepLedger(ledger, ["r1"]);
   assert.equal(mintId(ledger, "s2", now), "r3");
   const reloaded = parseLedger(JSON.stringify({ nextId: 1, memories: { r9: { source: "x", learned: "2025-01-01" } } }));
@@ -108,4 +108,13 @@ test("saves and loads ledgers, tolerating missing or malformed files", () => {
   );
   assert.deepEqual(Object.keys(filtered.memories), ["r1"]);
   assert.deepEqual(filtered.memories.r1!.votes, [{ kind: "applied", ts: "t" }]);
+});
+
+test("every memory carries an origin, and ledgers written before origin existed read as human", () => {
+  const old = parseLedger(JSON.stringify({ nextId: 3, memories: { r1: { source: "a", learned: "2025-01-01", votes: [] }, r2: { source: "b", learned: "2025-01-02", origin: "bogus" } } }));
+  assert.equal(old.memories.r1!.origin, "human");
+  assert.equal(old.memories.r2!.origin, "human");
+  const observed = parseLedger(JSON.stringify({ nextId: 2, memories: { r1: { source: "a", learned: "2025-01-01", origin: "observed" } } }));
+  assert.equal(observed.memories.r1!.origin, "observed");
+  assert.equal(parseLedger(JSON.stringify(observed)).memories.r1!.origin, "observed");
 });
