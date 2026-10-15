@@ -140,5 +140,5 @@ test("review runs fzf with key bindings, a bat preview and the list as its sourc
   assert.equal(result.code, 1);
   assert.match(result.stdout, /needs fzf/);
   assert.equal(missing.fzfRuns.length, 0);
-  assert.ok(fzfArgs("/pkg", "cat").some((arg) => arg.startsWith("--preview-window=right")));
+  assert.ok(fzfArgs("/pkg", "cat").some((arg) => arg.startsWith("--preview-window=up")));
 });

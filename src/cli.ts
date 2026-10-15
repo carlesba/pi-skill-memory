@@ -149,7 +149,7 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
     "--with-nth=2..",
     "--border=rounded",
     "--border-label= memory proposals ",
-    "--preview-window=right,62%,wrap,border-left",
+    "--preview-window=up,65%,wrap,border-bottom",
     `--preview=${self} show {1} | ${preview}`,
     `--header=${REVIEW_KEYS}`,
     `--bind=${act("a", "apply")}`,

@@ -131,6 +131,10 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     for (const handler of handlers.get(event) ?? []) result = await handler({ type: event, ...payload }, context);
     return result;
   }
+  async function proposals(context = ctx()): Promise<string> {
+    await commands.get("proposals")!.handler("", context);
+    return notes.at(-1)?.text ?? "";
+  }
   async function command(args: string, context = ctx()): Promise<string> {
     await commands.get("memory")!.handler(args, context);
     return notes.at(-1)?.text ?? "";
@@ -157,7 +161,7 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   async function typed(text: string, source = "interactive", mode = "tui") {
     await (await deliver(text, source, { mode }))();
   }
-  return { reviewAppExit, handlers, commands, jobs, applyJobs, notes, widgets, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
+  return { reviewAppExit, handlers, commands, jobs, applyJobs, notes, widgets, script, shown, session, ctx, fire, command, proposals, toolRound, deliver, receive, typed };
 }
 
 function userMessages(count: number): unknown[] {
@@ -197,7 +201,7 @@ test("the default export registers every handler and the memory command without 
       "tool_result",
     ],
   );
-  assert.deepEqual(commands, ["memory"]);
+  assert.deepEqual(commands, ["memory", "proposals"]);
 });
 
 test("resources_discover lists generic topics plus the cwd repo's topics and records why", async () => {
@@ -567,7 +571,7 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   const fixture = proposalFixture();
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
-  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /proposals"]);
   assert.equal(h.shown.reviewApps + h.shown.selects.length, 0);
 
   for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
@@ -581,17 +585,17 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   appendRun(fixture.stateDir, { kind: "apply", ts: "2025-03-01T11:00:00.000Z", session: "s0", outcome: "ok", topics: ["git"], summary: "applied 1 to git · 1 skipped" });
   const later = harness(fixture);
   await later.fire("session_start", { reason: "startup" });
-  assert.deepEqual(later.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals · last apply: applied 1 to git · 1 skipped"]);
+  assert.deepEqual(later.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /proposals · last apply: applied 1 to git · 1 skipped"]);
   const again = harness(fixture);
   await again.fire("session_start", { reason: "startup" });
-  assert.deepEqual(again.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);
+  assert.deepEqual(again.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /proposals"]);
   assert.match(await again.command("status"), /last proposal apply: ok at 2025-03-01T11:00:00.000Z, applied 1 to git · 1 skipped/);
 });
 
 test("the startup proposal count clears once the user types", async () => {
   const h = harness(proposalFixture());
   await h.fire("session_start", { reason: "startup" });
-  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /proposals"]);
   await h.fire("input", { text: "hello", source: "interactive" });
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
@@ -606,19 +610,19 @@ test("a notice with no pending proposals clears once the user types", async () =
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
 
-test("/memory proposals in the TUI opens the review app, then clears the widget and reports the count", async () => {
+test("/proposals in the TUI opens the review app, then clears the widget and reports the count", async () => {
   const fixture = proposalFixture();
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   const [first] = readProposals(fixture.dir);
   h.reviewAppExit.code = 0;
   updateProposalState(fixture.stateDir, (state) => snooze(state, first!.id, new Date("2025-03-01T12:00:00.000Z")));
-  const note = await h.command("proposals");
+  const note = await h.proposals();
   assert.equal(h.shown.reviewApps, 1);
   assert.equal(note, "2 memory proposals pending.");
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
   h.reviewAppExit.code = 2;
-  assert.match(await h.command("proposals"), /exited with code 2; is fzf installed\?/);
+  assert.match(await h.proposals(), /exited with code 2; is fzf installed\?/);
 });
 
 test("RPC clients review through select and editor dialogs, and print mode lists the proposals", async () => {
@@ -626,7 +630,7 @@ test("RPC clients review through select and editor dialogs, and print mode lists
   const h = harness(fixture);
   h.script.selects.push("Comment…", "Apply", undefined);
   h.script.editors.push(" only the first sentence ");
-  await h.command("proposals", h.ctx("/work/apollo", "rpc"));
+  await h.proposals(h.ctx("/work/apollo", "rpc"));
   assert.equal(h.shown.reviewApps, 0);
   assert.equal(h.shown.selects.length, 3);
   assert.match(h.shown.selects[0]!, /^Memory proposal 1\/3 for react-code \(2026-10-09\)\nRule: Do not wrap/);
@@ -635,7 +639,7 @@ test("RPC clients review through select and editor dialogs, and print mode lists
   assert.equal(h.applyJobs[0]!.proposals.length, 1);
 
   const plain = harness(proposalFixture());
-  const listing = await plain.command("proposals", { ...plain.ctx("/work/apollo", "print"), hasUI: false });
+  const listing = await plain.proposals({ ...plain.ctx("/work/apollo", "print"), hasUI: false });
   assert.match(listing, /^3 memory proposals pending/);
   assert.match(listing, /react-code: Return hook output as one object/);
 });

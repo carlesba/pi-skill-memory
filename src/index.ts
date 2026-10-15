@@ -61,7 +61,8 @@ export const USER_MEMORY_HEADING = "What this user wants from agents in every re
 export const REMINDER_MESSAGE_TYPE = "pi-skill-memory-reminder";
 export const COMMAND_NAME = "memory";
 export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
-export const SUBCOMMANDS = ["status", "explain", "write", "proposals"] as const;
+export const SUBCOMMANDS = ["status", "explain", "write"] as const;
+export const PROPOSALS_COMMAND = "proposals";
 
 export interface ExtensionDeps {
   resolver: RepoResolver;
@@ -459,7 +460,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     }
 
     pi.registerCommand(COMMAND_NAME, {
-      description: "Memory skills: status, explain, write, proposals",
+      description: "Memory skills: status, explain, write",
       getArgumentCompletions: (prefix) => {
         const items = SUBCOMMANDS.filter((name) => name.startsWith(prefix.trim())).map((name) => ({ value: name, label: name }));
         return items.length > 0 ? items : null;
@@ -471,17 +472,28 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
           if (subcommand === "status") runStatus(session, ctx);
           else if (subcommand === "explain") notify(ctx, formatExplain(listed, session.reminders));
           else if (subcommand === "write") runWrite(session, ctx);
-          else if (subcommand === "proposals") await runProposals(session, ctx);
           else {
             notify(
               ctx,
-              `Unknown subcommand "${subcommand}". Use /memory status, /memory explain, /memory write or /memory proposals.`,
+              `Unknown subcommand "${subcommand}". Use /memory status, /memory explain or /memory write; review proposals with /proposals.`,
               "warning",
             );
           }
         } catch (error) {
           logFailure(`/memory ${subcommand}`, error);
           notify(ctx, `/memory ${subcommand} failed: ${errorMessage(error)}`, "error");
+        }
+      },
+    });
+
+    pi.registerCommand(PROPOSALS_COMMAND, {
+      description: "Review memory proposals for your skills: apply, comment, discard or omit",
+      handler: async (_args, ctx) => {
+        try {
+          await runProposals(current(ctx), ctx);
+        } catch (error) {
+          logFailure(`/${PROPOSALS_COMMAND}`, error);
+          notify(ctx, `/${PROPOSALS_COMMAND} failed: ${errorMessage(error)}`, "error");
         }
       },
     });

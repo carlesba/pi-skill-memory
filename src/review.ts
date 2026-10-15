@@ -164,7 +164,7 @@ export function applyNotice(run: RunRecord | null, state: ProposalState): string
 export function proposalWidgetLine(pending: number, notice: string | null): string | null {
   const last = notice ? `last apply: ${notice}` : null;
   if (pending > 0) {
-    const head = `${pending} memory proposal${pending === 1 ? "" : "s"} — /memory proposals`;
+    const head = `${pending} memory proposal${pending === 1 ? "" : "s"} — /proposals`;
     return last ? `${head} · ${last}` : head;
   }
   return last ? `memory proposals: ${last}` : null;
@@ -173,7 +173,7 @@ export function proposalWidgetLine(pending: number, notice: string | null): stri
 export function formatProposalList(proposals: Proposal[]): string {
   if (proposals.length === 0) return "No memory proposals pending.";
   return [
-    `${proposals.length} memory proposals pending (review them in the terminal UI with /memory proposals):`,
+    `${proposals.length} memory proposals pending (review them in the terminal UI with /proposals):`,
     ...proposals.map((proposal) => `  ${proposal.id} ${proposal.skill}: ${proposal.rule}`),
   ].join("\n");
 }
