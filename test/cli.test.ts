@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { actionLines, cardArgs, listLines, parseChoice, previewCommand, REVIEW_KEYS, runCli, type CliDeps } from "../src/cli.ts";
+import { actionLines, cardArgs, listLines, parseChoice, previewCommand, previewRows, REVIEW_KEYS, runCli, type CliDeps } from "../src/cli.ts";
 import { resolveConfig } from "../src/config.ts";
 import { loadProposalState } from "../src/proposal-state.ts";
 import { readProposals } from "../src/proposals.ts";
@@ -49,6 +49,7 @@ function fixture(options: { fzf?: boolean; bat?: boolean; comment?: string | nul
       return { runner: "detached", jobFile: "job.json" };
     },
     editComment: () => (options.comment === undefined ? "put it under Providers\n" : options.comment),
+    terminalRows: () => 30,
     runFzf: (args, input) => {
       fzfRuns.push({ args, input });
       return `${keys.shift() ?? "q"}\n`;
@@ -147,13 +148,15 @@ test("quitting stops the review, omitted proposals are not shown again in the sa
 });
 
 test("the card binds a single key per action, scrolls the preview with j/k, and runs under /bin/sh", () => {
-  const args = cardArgs({ packageRoot: "/pkg", preview: "cat", id: "abc", position: 2, total: 5, skill: "git", message: "" });
+  const args = cardArgs({ packageRoot: "/pkg", preview: "cat", id: "abc", position: 2, total: 5, skill: "git", message: "", rows: 30 });
   const joined = args.join("\n");
   assert.equal(args[0], "--with-shell=/bin/sh -c");
   assert.match(joined, /--bind=a:print\(a\)\+accept,c:print\(c\)\+accept,d:print\(d\)\+accept,o:print\(o\)\+accept,s:print\(s\)\+accept,q:print\(q\)\+accept/);
   assert.match(joined, /--bind=j:preview-down\+preview-down\+preview-down,k:preview-up\+preview-up\+preview-up/);
-  assert.match(joined, /--preview-window=up,75%/);
-  assert.ok(args.includes(`--header=${REVIEW_KEYS}`));
+  assert.match(joined, /--preview-window=up,19,/);
+  assert.ok(args.includes(`--header=${REVIEW_KEYS}\n `));
+  assert.equal(previewRows(30), 19);
+  assert.equal(previewRows(8), 5);
   assert.equal(parseChoice("d\n"), "discard");
   assert.equal(parseChoice("c\tc  Comment\n"), "comment");
   assert.equal(parseChoice(""), "quit");

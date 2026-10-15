@@ -27,6 +27,7 @@ export interface CliDeps {
   enqueue: (job: QueuedJob) => { runner: string; jobFile: string };
   editComment: (initial: string, skill: string) => string | null;
   runFzf: (args: string[], input: string) => string;
+  terminalRows: () => number;
 }
 
 export interface CliResult {
@@ -137,9 +138,16 @@ export function actionLines(): string {
   return REVIEW_ACTIONS.map((action) => `${action.key}\t${action.key}  ${action.label}\n`).join("");
 }
 
-export function cardArgs(input: { packageRoot: string; preview: string; id: string; position: number; total: number; skill: string; message: string }): string[] {
+export const CARD_CHROME_ROWS = 3;
+export const MIN_PREVIEW_ROWS = 5;
+
+export function previewRows(terminalRows: number): number {
+  return Math.max(MIN_PREVIEW_ROWS, terminalRows - CARD_CHROME_ROWS - 2 - REVIEW_ACTIONS.length);
+}
+
+export function cardArgs(input: { packageRoot: string; preview: string; id: string; position: number; total: number; skill: string; message: string; rows: number }): string[] {
   const show = `${selfCommand(input.packageRoot)} show ${shellQuote(input.id)} | ${input.preview}`;
-  const header = input.message === "" ? REVIEW_KEYS : `${REVIEW_KEYS}\n${input.message}`;
+  const header = `${REVIEW_KEYS}\n${input.message === "" ? " " : input.message}`;
   return [
     "--with-shell=/bin/sh -c",
     "--ansi",
@@ -150,7 +158,8 @@ export function cardArgs(input: { packageRoot: string; preview: string; id: stri
     "--with-nth=2..",
     "--border=rounded",
     `--border-label= memory proposal ${input.position} of ${input.total} · ${input.skill} `,
-    "--preview-window=up,75%,wrap,border-bottom",
+    "--info=hidden",
+    `--preview-window=up,${previewRows(input.rows)},wrap,border-bottom`,
     "--color=16",
     `--preview=${show}`,
     `--header=${header}`,
@@ -217,7 +226,7 @@ export async function review(deps: CliDeps): Promise<string> {
     const proposal = readProposals(config.dir).find((candidate) => candidate.id === queue[index]);
     if (!proposal) continue;
     const output = deps.runFzf(
-      cardArgs({ packageRoot: deps.packageRoot, preview, id: proposal.id, position: index + 1, total: queue.length, skill: proposal.skill, message }),
+      cardArgs({ packageRoot: deps.packageRoot, preview, id: proposal.id, position: index + 1, total: queue.length, skill: proposal.skill, message, rows: deps.terminalRows() }),
       actionLines(),
     );
     const choice = parseChoice(output);
@@ -291,6 +300,7 @@ export function defaultCliDeps(env: Record<string, string | undefined> = process
     which: findOnPath,
     enqueue: (job) => enqueueWriter(job, { which: findOnPath }),
     editComment: editInEditor,
+    terminalRows: () => process.stdout.rows || process.stderr.rows || 40,
     runFzf: (args, input) => spawnSync("fzf", args, { input, stdio: ["pipe", "pipe", "inherit"], env: childEnv, encoding: "utf8" }).stdout ?? "",
   };
 }
