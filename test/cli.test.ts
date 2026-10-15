@@ -132,6 +132,7 @@ test("review runs fzf with key bindings, a bat preview and the list as its sourc
   }
   assert.match(args, /--bind=c:execute\(.* comment \{1\}\)/);
   assert.match(args, /--no-input/);
+  assert.equal(run!.args[0], "--with-shell=/bin/sh -c");
   assert.match(args, /--theme="\$\{BAT_THEME:-ansi\}"/);
   assert.match(args, /--color=16/);
   assert.match(args, /--bind=ctrl-j:preview-down\+preview-down\+preview-down,ctrl-k:preview-up\+preview-up\+preview-up/);

@@ -141,6 +141,7 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
   const act = (key: string, verb: string, silent = true) =>
     `${key}:${silent ? "execute-silent" : "execute"}(${self} ${verb} {1})+reload(${self} list)+transform-header(${self} header)+refresh-preview`;
   return [
+    "--with-shell=/bin/sh -c",
     "--ansi",
     "--no-input",
     "--no-sort",
@@ -243,7 +244,7 @@ function editInEditor(initial: string, skill: string): string | null {
   writeFileSync(file, initial);
   try {
     const editor = process.env.VISUAL || process.env.EDITOR || "vi";
-    const result = spawnSync(process.env.SHELL || "/bin/sh", ["-c", `${editor} ${shellQuote(file)}`], { stdio: "inherit" });
+    const result = spawnSync("/bin/sh", ["-c", `${editor} ${shellQuote(file)}`], { stdio: "inherit" });
     if (result.status !== 0) return null;
     return readFileSync(file, "utf8");
   } finally {
