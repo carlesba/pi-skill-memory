@@ -185,7 +185,7 @@ export function overlayReviewUI(ctx: CardContext): ReviewUI {
     card: (input) =>
       ctx.ui.custom<CardResult>((tui, theme, _keybindings, done) => new ProposalCard(tui, theme, input, done), {
         overlay: true,
-        overlayOptions: { anchor: "center", width: "96%", maxHeight: "94%", margin: 1 },
+        overlayOptions: { anchor: "center", width: "90%", maxHeight: "85%", margin: 1 },
       }),
   };
 }

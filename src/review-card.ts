@@ -6,16 +6,15 @@ import {
   Markdown,
   matchesKey,
   ScrollView,
-  SelectList,
   stripTerminalSequences,
   Text,
   truncateToWidth,
+  visibleWidth,
   VStack,
   type Component,
   type EditorTheme,
   type Focusable,
   type MarkdownTheme,
-  type SelectItem,
   type SelectListTheme,
   type TUI,
 } from "@earendil-works/pi-tui";
@@ -47,6 +46,7 @@ export const CARD_ACTIONS: { key: string; value: "apply" | "comment" | "discard"
 ];
 
 export const WIDE_CARD_COLUMNS = 110;
+export const MAX_SKILL_ROWS = 18;
 export const MIN_STACKED_SKILL_ROWS = 5;
 
 const STOPWORDS = new Set([
@@ -87,14 +87,28 @@ export function relevantHeading(markdown: string, text: string): string | null {
   return best?.heading ?? null;
 }
 
+const BLOCK_LINE = /^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|~~~|<|$)/;
+
+export function unwrapParagraphs(markdown: string): string {
+  const out: string[] = [];
+  let fenced = false;
+  for (const line of markdown.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
+    const previous = out.at(-1);
+    const continues = !fenced && previous !== undefined && previous.trim() !== "" && !/^\s*(```|~~~|#{1,6}\s|\|)/.test(previous) && !BLOCK_LINE.test(line);
+    if (continues) out[out.length - 1] = `${previous.trimEnd()} ${line.trim()}`;
+    else out.push(line);
+  }
+  return out.join("\n");
+}
+
 export function skillBody(text: string): string {
-  return splitFrontmatter(text)?.body ?? text;
+  return unwrapParagraphs(splitFrontmatter(text)?.body ?? text);
 }
 
 export function proposalMarkdown(input: CardInput): string {
   const { proposal } = input;
   const parts = [
-    `**proposal:${proposal.skill}** · ${proposal.date} · ${input.position} of ${input.total}`,
     `**Rule** ${proposal.rule}`,
     `**Why** ${proposal.why}`,
   ];
@@ -176,7 +190,7 @@ export class Viewport implements Component {
 
 export class ProposalCard implements Component, Focusable {
   private mode: "card" | "comment" = "card";
-  private readonly select: SelectList;
+  private selected = 0;
   private readonly editor: Editor;
   private readonly proposalPane: Viewport;
   private readonly skillPane: Viewport;
@@ -200,14 +214,6 @@ export class ProposalCard implements Component, Focusable {
     const anchor = input.skillText === null ? null : relevantHeading(body, `${input.proposal.rule} ${input.proposal.why}`);
     this.skillPane = new Viewport(new Markdown(body, 0, 0, md), () => tui.requestRender(), anchor);
     this.skillTitle = new Text(theme.fg("dim", input.skillPath ?? input.proposal.skill), 0, 0);
-    const items: SelectItem[] = CARD_ACTIONS.map((action) => ({
-      value: action.value,
-      label: `${action.key}  ${action.label}`,
-      description: action.description,
-    }));
-    this.select = new SelectList(items, items.length, selectListTheme(theme));
-    this.select.onSelect = (item) => this.act(item.value);
-    this.select.onCancel = () => this.done({ action: "stop" });
     this.editor = new Editor(tui, editorTheme(theme));
     this.editor.setText(input.comment);
     this.editor.onSubmit = (text) => this.done({ action: "comment", comment: text.trim() });
@@ -272,42 +278,61 @@ export class ProposalCard implements Component, Focusable {
       this.refresh();
       return;
     }
-    this.select.handleInput(data);
-    this.refresh();
+    const step = matchesKey(data, Key.right) || matchesKey(data, Key.down) || matchesKey(data, Key.tab) ? 1
+      : matchesKey(data, Key.left) || matchesKey(data, Key.up) ? -1
+      : 0;
+    if (step !== 0) {
+      this.selected = (this.selected + step + CARD_ACTIONS.length) % CARD_ACTIONS.length;
+      this.refresh();
+      return;
+    }
+    if (matchesKey(data, Key.enter)) this.act(CARD_ACTIONS[this.selected]!.value);
   }
 
   invalidate(): void {
     this.proposalText.invalidate();
     this.skillPane.invalidate();
-    this.select.invalidate();
     this.editor.invalidate?.();
   }
 
   private budget(): number {
     const rows = this.tui.terminal.rows || 40;
-    return Math.max(14, Math.floor(rows * 0.9));
+    return Math.max(14, Math.floor(rows * 0.8));
+  }
+
+  private actionBar(): string {
+    return CARD_ACTIONS.map((action, index) => {
+      const label = `[${action.key}] ${action.label}`;
+      return index === this.selected ? this.theme.fg("accent", this.theme.bold(`› ${label}`)) : this.theme.fg("muted", `  ${label}`);
+    }).join("  ");
+  }
+
+  private contentHeight(innerWidth: number, footerRows: number): number {
+    const wide = innerWidth >= WIDE_CARD_COLUMNS;
+    const proposalWidth = wide ? Math.floor(((innerWidth - 2) * 2) / 5) : innerWidth;
+    const proposalRows = this.proposalText.render(proposalWidth).length;
+    const wanted = wide ? Math.max(proposalRows, MAX_SKILL_ROWS) : proposalRows + 2 + MAX_SKILL_ROWS;
+    return Math.max(4, Math.min(wanted, this.budget() - footerRows - 4));
   }
 
   render(width: number): string[] {
-    const safeWidth = Math.max(20, width);
-    const border = this.theme.fg("accent", "─".repeat(safeWidth));
-    const title = truncateToWidth(
-      ` ${this.theme.bold("Memory proposal")} ${this.theme.fg("muted", `${this.input.position}/${this.input.total} · ${this.input.proposal.skill}`)}`,
-      safeWidth,
-    );
+    const safeWidth = Math.max(24, width);
+    const inner = safeWidth - 4;
+    const border = (text: string) => this.theme.fg("border", text);
+    const row = (line: string) => {
+      const fitted = truncateToWidth(line, inner);
+      return `${border("│")} ${fitted}${" ".repeat(Math.max(0, inner - visibleWidth(fitted)))} ${border("│")}`;
+    };
+    const rule = (left: string, right: string) => border(`${left}${"─".repeat(safeWidth - 2)}${right}`);
+    const heading = ` ${this.theme.bold("Memory proposal")} ${this.theme.fg("muted", `${this.input.position}/${this.input.total} · ${this.input.proposal.skill} · ${this.input.proposal.date}`)} `;
+    const top = border("╭─") + truncateToWidth(heading, safeWidth - 4) + border(`${"─".repeat(Math.max(0, safeWidth - 3 - visibleWidth(truncateToWidth(heading, safeWidth - 4))))}╮`);
     const footer =
       this.mode === "comment"
-        ? [
-            ...this.editor.render(safeWidth),
-            truncateToWidth(this.theme.fg("dim", " Enter saves the comment · Shift+Enter new line · Esc cancels"), safeWidth),
-          ]
-        : [
-            ...this.select.render(safeWidth),
-            truncateToWidth(this.theme.fg("dim", " a/c/d/o or ↑↓ Enter · PgUp/PgDn scroll the skill · Esc stops reviewing"), safeWidth),
-          ];
-    const bodyHeight = Math.max(4, this.budget() - footer.length - 4);
-    const body = safeWidth >= WIDE_CARD_COLUMNS ? this.renderWide(safeWidth, bodyHeight) : this.renderStacked(safeWidth, bodyHeight);
-    return [border, title, ...body, border, ...footer, border].map((line) => truncateToWidth(line, safeWidth));
+        ? [...this.editor.render(inner), this.theme.fg("dim", "Enter saves the comment · Shift+Enter new line · Esc cancels")]
+        : [this.actionBar(), this.theme.fg("dim", "←→ Enter or a/c/d/o · PgUp/PgDn scroll the skill · Esc stops")];
+    const bodyHeight = this.contentHeight(inner, footer.length);
+    const body = inner >= WIDE_CARD_COLUMNS ? this.renderWide(inner, bodyHeight) : this.renderStacked(inner, bodyHeight);
+    return [top, ...body.map(row), rule("├", "┤"), ...footer.map(row), rule("╰", "╯")];
   }
 
   private renderWide(width: number, height: number): string[] {
@@ -327,7 +352,7 @@ export class ProposalCard implements Component, Focusable {
     const proposalLines = this.proposalText.render(width).length;
     this.proposalPane.height = Math.max(3, Math.min(proposalLines, height - 2 - MIN_STACKED_SKILL_ROWS));
     this.skillPane.height = Math.max(2, height - this.proposalPane.height - 2);
-    const divider = new Text(this.theme.fg("borderMuted", "─".repeat(width)), 0, 0);
+    const divider = new Text(this.theme.fg("borderMuted", "┄".repeat(width)), 0, 0);
     return new VStack([this.proposalPane, divider, this.skillTitle, this.skillPane]).render(width);
   }
 }

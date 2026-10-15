@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import type { Proposal } from "../src/proposals.ts";
-import { ProposalCard, proposalMarkdown, relevantHeading, type CardInput, type CardResult } from "../src/review-card.ts";
+import { ProposalCard, proposalMarkdown, relevantHeading, unwrapParagraphs, type CardInput, type CardResult } from "../src/review-card.ts";
 
 const plain = (_color: string, text: string) => text;
 const THEME = {
@@ -63,22 +63,22 @@ test("the wide card puts the proposal beside the skill, scrolled to the most rel
   const { component } = card();
   const lines = component.render(140);
   assert.ok(lines.length <= 27, `${lines.length} lines`);
-  for (const line of lines) assert.ok(visibleWidth(line) <= 140);
+  for (const line of lines) assert.equal(visibleWidth(line), 140);
   const rendered = text(lines);
-  assert.match(rendered, /Memory proposal 2\/9 · react-code/);
-  assert.ok(lines.some((line) => /proposal:react-code · 2026-10-09.*~\/\.agents\/skills\/react-code\/SKILL\.md/.test(stripTerminalSequences(line))));
+  assert.match(rendered, /Memory proposal 2\/9 · react-code · 2026-10-09/);
+  assert.ok(lines.some((line) => /Rule Do not wrap.*~\/\.agents\/skills\/react-code\/SKILL\.md/.test(stripTerminalSequences(line))));
   assert.match(rendered, /Providers and memo/);
   assert.doesNotMatch(rendered, /Line 0 about styling/);
   assert.match(rendered, /“if not we should avoid it\.”/);
-  assert.match(rendered, /a {2}Apply/);
-  assert.match(rendered, /o {2}Omit/);
+  assert.match(rendered, /› \[a\] Apply/);
+  assert.match(rendered, /\[o\] Omit/);
 });
 
 test("a narrow card stacks the proposal above the skill and stays within width and height", () => {
   const { component } = card({ comment: "only the first sentence", lastError: "skipped: SKILL.md has uncommitted changes" }, 32);
   const lines = component.render(70);
   assert.ok(lines.length <= 28, `${lines.length} lines`);
-  for (const line of lines) assert.ok(visibleWidth(line) <= 70);
+  for (const line of lines) assert.equal(visibleWidth(line), 70);
   const rendered = text(lines);
   assert.ok(rendered.indexOf("Rule") < rendered.indexOf("~/.agents/skills/react-code/SKILL.md"));
   assert.match(rendered, /Comment only the first sentence/);
@@ -128,5 +128,10 @@ test("a missing skill still renders, and the relevant heading uses token overlap
   assert.match(text(component.render(120)), /No SKILL\.md found for react-code/);
   assert.equal(relevantHeading("# A\n\nnothing\n\n## Memo usage\n\nuseMemo on provider value", PROPOSAL.rule), "Memo usage");
   assert.equal(relevantHeading("# A\n\nunrelated", "zzz"), null);
-  assert.match(proposalMarkdown({ proposal: PROPOSAL, comment: "", lastError: "", position: 1, total: 1, skillPath: null, skillText: null }), /^\*\*proposal:react-code\*\* · 2026-10-09 · 1 of 1/);
+  assert.match(proposalMarkdown({ proposal: PROPOSAL, comment: "", lastError: "", position: 1, total: 1, skillPath: null, skillText: null }), /^\*\*Rule\*\* Do not wrap/);
+});
+
+test("hard-wrapped skill paragraphs are joined so the pane rewraps them, leaving lists, headings and code alone", () => {
+  const source = "# Title\n\nfirst half\nsecond half\n\n- item one\n  continued\n- item two\n\n```\ncode a\ncode b\n```\n";
+  assert.equal(unwrapParagraphs(source), "# Title\n\nfirst half second half\n\n- item one continued\n- item two\n\n```\ncode a\ncode b\n```\n");
 });
