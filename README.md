@@ -16,9 +16,9 @@ Everything lives in the memory directory (the `dir` setting).
 - `user.ledger.json` is the ledger for `user.md`, with the same entry for each memory as a topic ledger. It is never shown to the model.
 - `memory-skills/<topic>/SKILL.md` is one topic skill. Its frontmatter carries `name`, `description`, `metadata.scope` (`generic` or `repo:<owner>/<name>`) and `metadata.updated`. The body is one short paragraph per memory, each ending in a block id such as `^r7`. Topic names look like `mem-apollo-state` for a repository topic and `mem-any-react-components` for a generic one, and the directory is named after the skill.
 - `memory-skills/<topic>/ledger.json` records where each memory came from, its origin and the votes it has received. It is never shown to the model.
-- `proposals.md` collects lessons that belong in one of your hand-written skills. The writer never edits those skills; it proposes the change for you to review.
+- `proposals.md` collects lessons that belong in one of your hand-written skills. The writer never edits those skills on its own; it proposes the change, and a skill changes only after you approve the proposal in `/memory proposals`.
 
-The state directory (the `stateDir` setting) sits outside the memory directory because its files change constantly. It holds `usage.jsonl` (which topics were listed, reminded and loaded), `runs.jsonl` (one line per writer run and its outcome), `writer.log`, and the queued writer jobs.
+The state directory (the `stateDir` setting) sits outside the memory directory because its files change constantly. It holds `usage.jsonl` (which topics were listed, reminded and loaded), `runs.jsonl` (one line per writer run or proposal apply and its outcome), `proposals-state.json` (the comments, snoozes and last apply errors of pending proposals), `writer.log`, and the queued writer jobs.
 
 A repository is identified by its normalized git remote, so `git@github.com:preply/apollo.git`, `https://github.com/preply/apollo` and `ssh://git@github.com/preply/apollo` are all `preply/apollo`. Worktrees and separate clones of the same repository therefore share their memory, and the directory name of a checkout never matters.
 
@@ -119,15 +119,32 @@ The lock file `.writer.lock` is never committed, but it does appear as an untrac
 
 Install the published package with `pi install npm:pi-skill-memory`.
 
-Before it is published, install it from a local checkout by its absolute path, for example `pi install /Users/you/code/pi-skill-memory`. pi records the path in `~/.pi/agent/settings.json` and loads the extension from the checkout without copying it. pi does not run `npm install` for local packages, so the checkout's `node_modules` is yours to manage. The extension has no runtime dependencies, so it loads without one; run `npm install` in the checkout yourself when you want to run the tests or the typecheck. To try the extension for one session without saving it, run `pi -e /Users/you/code/pi-skill-memory`.
+Before it is published, install it from a local checkout by its absolute path, for example `pi install /Users/you/code/pi-skill-memory`. pi records the path in `~/.pi/agent/settings.json` and loads the extension from the checkout without copying it. pi does not run `npm install` for local packages, so the checkout's `node_modules` is yours to manage. The extension imports only pi's own packages, which pi provides at runtime, so it loads without one; run `npm install` in the checkout yourself when you want to run the tests or the typecheck. To try the extension for one session without saving it, run `pi -e /Users/you/code/pi-skill-memory`.
 
 pi loads the extension's TypeScript directly. The writer runs as a separate Node process, which needs Node 22.18 or newer. Node refuses to strip types from files under `node_modules`, so the published package also ships the writer compiled to `dist/`, built by `npm pack` and `npm publish`. The writer runs `dist/writer/main.js` when it exists and `src/writer/main.ts` otherwise. In a local checkout where you have run `npm run build`, delete `dist/` or rebuild it after editing the writer, or the writer will keep running the old build.
 
 ## Commands
 
-- `/memory status` shows the memory and state directories, whether `user.md` exists, how many topics each scope has, the last writer run with its outcome, and the runner, including whether `pueue` is on `PATH`. `/memory` on its own does the same.
+- `/memory status` shows the memory and state directories, whether `user.md` exists, how many topics each scope has, the last writer run with its outcome, the last proposal apply, and the runner, including whether `pueue` is on `PATH`. `/memory` on its own does the same.
 - `/memory explain` shows which topics pi currently lists and why (pi refreshes that listing at startup and on `/reload`, not on `/new` or `/resume`, so it can still reflect the directory pi started in), and which topics were named in reminders and what triggered each one: the tool call and path, or the word in your prompt.
 - `/memory write` queues the writer for the current session now, even when the session has fewer than `minUserMessages` human messages or a variable in `skipWriteWhenEnv` is set. Quitting afterwards does not queue the same session again unless you have continued it.
+- `/memory proposals` reviews the pending proposals in `proposals.md`, one card at a time, as described below.
+
+## Reviewing proposals
+
+When pi starts in the terminal UI and proposals are waiting, a line above the editor says how many, for example `3 memory proposals — /memory proposals`. It never opens a dialog by itself, so the chat input stays free, and it does not appear for `/new`, `/resume`, forks, or modes without the terminal UI. The same line reports the result of the last apply job once, for example `last apply: applied 2 to react-code · 1 skipped`.
+
+`/memory proposals` opens one card per proposal. The left side shows the skill, the rule, why, the quoted evidence, the date, and any comment you saved; the right side shows the target skill's `SKILL.md`, scrolled to the heading that shares the most words with the rule (PgUp and PgDn scroll it). Narrow terminals stack the two. Each proposal has an id derived from its skill, rule and session, so the file format stays as the writer writes it. The actions are:
+
+- Apply (`a`) approves the proposal for the apply job.
+- Comment… (`c`) opens a multi-line editor for an instruction to the apply job, such as "only the first sentence" or "put it under Providers". The comment is saved with the proposal, kept if you omit it, and the card asks again.
+- Discard (`d`) deletes the entry from `proposals.md` and commits that file in the memory directory. It waits for a running writer, because the writer appends to the same file.
+- Omit (`o`) hides the proposal for 24 hours; then it counts as pending again.
+- Esc stops reviewing and leaves the remaining proposals as they are.
+
+An RPC client gets the same actions as a select dialog per proposal and an editor dialog for comments. Without any UI the command lists the pending proposals.
+
+When the review ends, every approved proposal goes into one background job on the writer's queue, so no skill is edited in your chat. The job finds each skill through the skill index and follows its symlink to the real file. It skips a skill, keeping its proposals pending, when that `SKILL.md` has uncommitted changes or its repository is not on `main` or `master`, so a model edit is never mixed with your work in progress. Otherwise it asks the writer model to work each rule into the place in the skill where it belongs and to honour your comments, checks that the answer keeps the frontmatter and the `name`, is not empty and did not grow beyond the rules it adds, and writes the file atomically. Each skill gets one local commit, `<skill>: apply memory proposal(s)`, that stages only that file and lists each rule with its comment. The job never pushes: `git log` is the review, `git revert` is the undo, and pushing stays with you. Applied entries are then removed from `proposals.md` and that change is committed in the memory directory. A skipped or failed proposal stays pending and its card shows why. `/memory status` reports the last apply run.
 
 ## License
 
