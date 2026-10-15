@@ -1,16 +1,13 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import {
   Editor,
-  HStack,
   Key,
   Markdown,
   matchesKey,
   ScrollView,
   stripTerminalSequences,
-  Text,
   truncateToWidth,
   visibleWidth,
-  VStack,
   type Component,
   type EditorTheme,
   type Focusable,
@@ -46,8 +43,6 @@ export const CARD_ACTIONS: { key: string; value: "apply" | "comment" | "discard"
 ];
 
 export const WIDE_CARD_COLUMNS = 110;
-export const MAX_SKILL_ROWS = 18;
-export const MIN_STACKED_SKILL_ROWS = 5;
 
 const STOPWORDS = new Set([
   "about", "after", "also", "because", "before", "being", "between", "does", "each", "every", "from", "have", "into",
@@ -154,6 +149,7 @@ function editorTheme(theme: Theme): EditorTheme {
 export class Viewport implements Component {
   readonly scroll: ScrollView;
   height = 1;
+  total = 0;
   private readonly requestRender: () => void;
   private readonly anchor: string | null;
   private scrolledByUser = false;
@@ -164,9 +160,30 @@ export class Viewport implements Component {
     this.anchor = anchor;
   }
 
+  get overflows(): boolean {
+    return this.total > this.height;
+  }
+
   scrollBy(lines: number): void {
     this.scrolledByUser = true;
     this.scroll.scrollBy(lines);
+  }
+
+  scrollTo(line: number): void {
+    this.scrolledByUser = true;
+    this.scroll.scrollTo(line);
+  }
+
+  page(): number {
+    return Math.max(1, this.height - 2);
+  }
+
+  position(): string {
+    if (!this.overflows) return "";
+    const top = this.scroll.scrollTop;
+    const last = Math.min(this.total, top + this.height);
+    const arrows = `${top > 0 ? "↑" : " "}${last < this.total ? "↓" : " "}`;
+    return `${arrows} ${top + 1}–${last}/${this.total}`;
   }
 
   invalidate(): void {
@@ -175,6 +192,7 @@ export class Viewport implements Component {
 
   render(width: number): string[] {
     const lines = this.scroll.render(width);
+    this.total = lines.length;
     this.scroll.updateLayout(lines.length, this.height, this.requestRender);
     if (!this.scrolledByUser && this.anchor !== null) {
       const needle = this.anchor.slice(0, 40);
@@ -188,14 +206,19 @@ export class Viewport implements Component {
   }
 }
 
+type Pane = "proposal" | "skill";
+
+const SCROLL_DOWN = ["j", "\x1b[B"];
+const SCROLL_UP = ["k", "\x1b[A"];
+
 export class ProposalCard implements Component, Focusable {
   private mode: "card" | "comment" = "card";
   private selected = 0;
+  private pane: Pane | null = null;
   private readonly editor: Editor;
   private readonly proposalPane: Viewport;
   private readonly skillPane: Viewport;
   private readonly proposalText: Markdown;
-  private readonly skillTitle: Text;
   private focusedState = false;
   private readonly tui: TUI;
   private readonly theme: Theme;
@@ -213,7 +236,6 @@ export class ProposalCard implements Component, Focusable {
     const body = input.skillText === null ? `*No SKILL.md found for ${input.proposal.skill} in the skill index.*` : skillBody(input.skillText);
     const anchor = input.skillText === null ? null : relevantHeading(body, `${input.proposal.rule} ${input.proposal.why}`);
     this.skillPane = new Viewport(new Markdown(body, 0, 0, md), () => tui.requestRender(), anchor);
-    this.skillTitle = new Text(theme.fg("dim", input.skillPath ?? input.proposal.skill), 0, 0);
     this.editor = new Editor(tui, editorTheme(theme));
     this.editor.setText(input.comment);
     this.editor.onSubmit = (text) => this.done({ action: "comment", comment: text.trim() });
@@ -232,6 +254,10 @@ export class ProposalCard implements Component, Focusable {
     return this.mode === "comment";
   }
 
+  get scrollingPane(): Pane {
+    return this.pane ?? (this.proposalPane.overflows ? "proposal" : "skill");
+  }
+
   private refresh(): void {
     this.tui.requestRender();
   }
@@ -244,6 +270,11 @@ export class ProposalCard implements Component, Focusable {
       return;
     }
     if (value === "apply" || value === "discard" || value === "omit") this.done({ action: value });
+  }
+
+  private scrollFocused(move: (viewport: Viewport) => void): void {
+    move(this.scrollingPane === "proposal" ? this.proposalPane : this.skillPane);
+    this.refresh();
   }
 
   handleInput(data: string): void {
@@ -268,19 +299,18 @@ export class ProposalCard implements Component, Focusable {
       this.done({ action: "stop" });
       return;
     }
-    if (matchesKey(data, Key.pageDown) || matchesKey(data, Key.shift("down"))) {
-      this.skillPane.scrollBy(matchesKey(data, Key.pageDown) ? Math.max(1, this.skillPane.height - 2) : 1);
+    if (matchesKey(data, Key.tab)) {
+      this.pane = this.scrollingPane === "proposal" ? "skill" : "proposal";
       this.refresh();
       return;
     }
-    if (matchesKey(data, Key.pageUp) || matchesKey(data, Key.shift("up"))) {
-      this.skillPane.scrollBy(matchesKey(data, Key.pageUp) ? -Math.max(1, this.skillPane.height - 2) : -1);
-      this.refresh();
-      return;
-    }
-    const step = matchesKey(data, Key.right) || matchesKey(data, Key.down) || matchesKey(data, Key.tab) ? 1
-      : matchesKey(data, Key.left) || matchesKey(data, Key.up) ? -1
-      : 0;
+    if (SCROLL_DOWN.includes(data) || matchesKey(data, Key.down)) return this.scrollFocused((pane) => pane.scrollBy(1));
+    if (SCROLL_UP.includes(data) || matchesKey(data, Key.up)) return this.scrollFocused((pane) => pane.scrollBy(-1));
+    if (data === "J" || data === " " || matchesKey(data, Key.pageDown)) return this.scrollFocused((pane) => pane.scrollBy(pane.page()));
+    if (data === "K" || matchesKey(data, Key.pageUp)) return this.scrollFocused((pane) => pane.scrollBy(-pane.page()));
+    if (data === "g") return this.scrollFocused((pane) => pane.scrollTo(0));
+    if (data === "G") return this.scrollFocused((pane) => pane.scrollTo(pane.total));
+    const step = data === "l" || matchesKey(data, Key.right) ? 1 : data === "h" || matchesKey(data, Key.left) ? -1 : 0;
     if (step !== 0) {
       this.selected = (this.selected + step + CARD_ACTIONS.length) % CARD_ACTIONS.length;
       this.refresh();
@@ -297,7 +327,7 @@ export class ProposalCard implements Component, Focusable {
 
   private budget(): number {
     const rows = this.tui.terminal.rows || 40;
-    return Math.max(14, Math.floor(rows * 0.8));
+    return Math.max(14, rows - 2);
   }
 
   private actionBar(): string {
@@ -307,12 +337,12 @@ export class ProposalCard implements Component, Focusable {
     }).join("  ");
   }
 
-  private contentHeight(innerWidth: number, footerRows: number): number {
-    const wide = innerWidth >= WIDE_CARD_COLUMNS;
-    const proposalWidth = wide ? Math.floor(((innerWidth - 2) * 2) / 5) : innerWidth;
-    const proposalRows = this.proposalText.render(proposalWidth).length;
-    const wanted = wide ? Math.max(proposalRows, MAX_SKILL_ROWS) : proposalRows + 2 + MAX_SKILL_ROWS;
-    return Math.max(4, Math.min(wanted, this.budget() - footerRows - 4));
+  private paneHeader(pane: Pane, label: string, viewport: Viewport, width: number): string {
+    const active = this.scrollingPane === pane;
+    const position = viewport.position();
+    const title = truncateToWidth(active ? this.theme.fg("accent", this.theme.bold(`● ${label}`)) : this.theme.fg("dim", `○ ${label}`), Math.max(1, width - visibleWidth(position) - 1));
+    const gap = Math.max(1, width - visibleWidth(title) - visibleWidth(position));
+    return `${title}${" ".repeat(gap)}${this.theme.fg(active ? "accent" : "dim", position)}`;
   }
 
   render(width: number): string[] {
@@ -324,35 +354,53 @@ export class ProposalCard implements Component, Focusable {
       return `${border("│")} ${fitted}${" ".repeat(Math.max(0, inner - visibleWidth(fitted)))} ${border("│")}`;
     };
     const rule = (left: string, right: string) => border(`${left}${"─".repeat(safeWidth - 2)}${right}`);
-    const heading = ` ${this.theme.bold("Memory proposal")} ${this.theme.fg("muted", `${this.input.position}/${this.input.total} · ${this.input.proposal.skill} · ${this.input.proposal.date}`)} `;
-    const top = border("╭─") + truncateToWidth(heading, safeWidth - 4) + border(`${"─".repeat(Math.max(0, safeWidth - 3 - visibleWidth(truncateToWidth(heading, safeWidth - 4))))}╮`);
+    const heading = truncateToWidth(
+      ` ${this.theme.bold("Memory proposal")} ${this.theme.fg("muted", `${this.input.position}/${this.input.total} · ${this.input.proposal.skill} · ${this.input.proposal.date}`)} `,
+      safeWidth - 4,
+    );
+    const top = border("╭─") + heading + border(`${"─".repeat(Math.max(0, safeWidth - 3 - visibleWidth(heading)))}╮`);
     const footer =
       this.mode === "comment"
         ? [...this.editor.render(inner), this.theme.fg("dim", "Enter saves the comment · Shift+Enter new line · Esc cancels")]
-        : [this.actionBar(), this.theme.fg("dim", "←→ Enter or a/c/d/o · PgUp/PgDn scroll the skill · Esc stops")];
-    const bodyHeight = this.contentHeight(inner, footer.length);
+        : [this.actionBar(), this.theme.fg("dim", "h/l choose · Enter or a/c/d/o act · j/k scroll · J/K page · Tab switch pane · Esc stop")];
+    const bodyHeight = Math.max(6, this.budget() - footer.length - 3);
     const body = inner >= WIDE_CARD_COLUMNS ? this.renderWide(inner, bodyHeight) : this.renderStacked(inner, bodyHeight);
     return [top, ...body.map(row), rule("├", "┤"), ...footer.map(row), rule("╰", "╯")];
   }
 
+  private skillLabel(): string {
+    return this.input.skillPath ?? this.input.proposal.skill;
+  }
+
   private renderWide(width: number, height: number): string[] {
-    this.proposalPane.height = height;
+    const gap = 3;
+    const leftWidth = Math.floor(((width - gap) * 2) / 5);
+    const rightWidth = width - gap - leftWidth;
+    this.proposalPane.height = height - 1;
     this.skillPane.height = height - 1;
-    const right = new VStack([this.skillTitle, this.skillPane]);
-    return new HStack(
-      [
-        { component: this.proposalPane, basis: 0, grow: 2 },
-        { component: right, basis: 0, grow: 3 },
-      ],
-      { gap: 2 },
-    ).render(width);
+    const left = this.proposalPane.render(leftWidth);
+    const right = this.skillPane.render(rightWidth);
+    const lines = [`${this.paneHeader("proposal", "Proposal", this.proposalPane, leftWidth)}${" ".repeat(gap)}${this.paneHeader("skill", this.skillLabel(), this.skillPane, rightWidth)}`];
+    const divider = this.theme.fg("borderMuted", " │ ");
+    for (let index = 0; index < height - 1; index++) {
+      const cell = truncateToWidth(left[index] ?? "", leftWidth);
+      lines.push(`${cell}${" ".repeat(Math.max(0, leftWidth - visibleWidth(cell)))}${divider}${right[index] ?? ""}`);
+    }
+    return lines;
   }
 
   private renderStacked(width: number, height: number): string[] {
     const proposalLines = this.proposalText.render(width).length;
-    this.proposalPane.height = Math.max(3, Math.min(proposalLines, height - 2 - MIN_STACKED_SKILL_ROWS));
-    this.skillPane.height = Math.max(2, height - this.proposalPane.height - 2);
-    const divider = new Text(this.theme.fg("borderMuted", "┄".repeat(width)), 0, 0);
-    return new VStack([this.proposalPane, divider, this.skillTitle, this.skillPane]).render(width);
+    const proposalRows = Math.max(3, Math.min(proposalLines, Math.floor((height - 2) / 2)));
+    this.proposalPane.height = proposalRows;
+    this.skillPane.height = Math.max(2, height - proposalRows - 2);
+    const proposal = this.proposalPane.render(width);
+    const skill = this.skillPane.render(width);
+    return [
+      this.paneHeader("proposal", "Proposal", this.proposalPane, width),
+      ...proposal,
+      this.paneHeader("skill", this.skillLabel(), this.skillPane, width),
+      ...skill,
+    ];
   }
 }

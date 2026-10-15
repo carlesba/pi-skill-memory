@@ -62,11 +62,11 @@ function text(lines: string[]): string {
 test("the wide card puts the proposal beside the skill, scrolled to the most relevant heading, within the terminal", () => {
   const { component } = card();
   const lines = component.render(140);
-  assert.ok(lines.length <= 27, `${lines.length} lines`);
+  assert.equal(lines.length, 28, `${lines.length} lines`);
   for (const line of lines) assert.equal(visibleWidth(line), 140);
   const rendered = text(lines);
   assert.match(rendered, /Memory proposal 2\/9 · react-code · 2026-10-09/);
-  assert.ok(lines.some((line) => /Rule Do not wrap.*~\/\.agents\/skills\/react-code\/SKILL\.md/.test(stripTerminalSequences(line))));
+  assert.ok(lines.some((line) => /○ Proposal.*● ~\/\.agents\/skills\/react-code\/SKILL\.md/.test(stripTerminalSequences(line))));
   assert.match(rendered, /Providers and memo/);
   assert.doesNotMatch(rendered, /Line 0 about styling/);
   assert.match(rendered, /“if not we should avoid it\.”/);
@@ -77,7 +77,7 @@ test("the wide card puts the proposal beside the skill, scrolled to the most rel
 test("a narrow card stacks the proposal above the skill and stays within width and height", () => {
   const { component } = card({ comment: "only the first sentence", lastError: "skipped: SKILL.md has uncommitted changes" }, 32);
   const lines = component.render(70);
-  assert.ok(lines.length <= 28, `${lines.length} lines`);
+  assert.equal(lines.length, 30, `${lines.length} lines`);
   for (const line of lines) assert.equal(visibleWidth(line), 70);
   const rendered = text(lines);
   assert.ok(rendered.indexOf("Rule") < rendered.indexOf("~/.agents/skills/react-code/SKILL.md"));
@@ -93,7 +93,7 @@ test("single keys pick an action and Esc stops reviewing", () => {
     assert.deepEqual(results, [{ action }], key);
   }
   const { component, results } = card();
-  component.handleInput("\x1b[B");
+  component.handleInput("l");
   component.handleInput("\r");
   assert.equal(results.length, 0);
   assert.equal(component.commenting, true);
@@ -112,15 +112,17 @@ test("c opens a multi-line comment editor prefilled with the saved note, and Esc
   assert.deepEqual(results, [{ action: "comment", comment: "under Providers now" }]);
 });
 
-test("PgUp and PgDn scroll the skill pane", () => {
+test("J/K and PgUp/PgDn page the skill pane when the proposal fits", () => {
   const { component } = card({ skillText: `---\nname: react-code\n---\n\n${FILLER}\n` });
   const before = text(component.render(140));
   assert.match(before, /Line 0 about styling/);
-  component.handleInput("\x1b[6~");
+  component.handleInput("J");
   const after = text(component.render(140));
   assert.doesNotMatch(after, /Line 0 about styling/);
-  component.handleInput("\x1b[5~");
+  component.handleInput("K");
   assert.match(text(component.render(140)), /Line 0 about styling/);
+  component.handleInput("\x1b[6~");
+  assert.doesNotMatch(text(component.render(140)), /Line 0 about styling/);
 });
 
 test("a missing skill still renders, and the relevant heading uses token overlap", () => {
@@ -134,4 +136,33 @@ test("a missing skill still renders, and the relevant heading uses token overlap
 test("hard-wrapped skill paragraphs are joined so the pane rewraps them, leaving lists, headings and code alone", () => {
   const source = "# Title\n\nfirst half\nsecond half\n\n- item one\n  continued\n- item two\n\n```\ncode a\ncode b\n```\n";
   assert.equal(unwrapParagraphs(source), "# Title\n\nfirst half second half\n\n- item one continued\n- item two\n\n```\ncode a\ncode b\n```\n");
+});
+
+test("a proposal longer than its pane scrolls with j/k, shows its position, and Tab hands scrolling to the skill", () => {
+  const longRule = Array.from({ length: 60 }, (_value, index) => `clause${index}`).join(" ");
+  const { component } = card({ proposal: { ...PROPOSAL, rule: longRule, why: "Tail reason at the very end." } }, 16);
+  const first = text(component.render(120));
+  assert.equal(component.scrollingPane, "proposal");
+  assert.match(first, /● Proposal\s+ ↓ 1–/);
+  assert.doesNotMatch(first, /Tail reason/);
+  component.handleInput("G");
+  const bottom = text(component.render(120));
+  assert.match(bottom, /Tail reason at the very end/);
+  assert.match(bottom, /↑ /);
+  component.handleInput("k");
+  component.handleInput("\t");
+  assert.equal(component.scrollingPane, "skill");
+  assert.match(text(component.render(120)), /○ Proposal/);
+});
+
+test("h and l move the highlighted action and Enter runs it", () => {
+  const { component, results } = card();
+  component.handleInput("l");
+  component.handleInput("l");
+  assert.match(text(component.render(140)), /› \[d\] Discard/);
+  component.handleInput("h");
+  component.handleInput("h");
+  component.handleInput("h");
+  component.handleInput("\r");
+  assert.deepEqual(results, [{ action: "omit" }]);
 });
