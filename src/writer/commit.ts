@@ -53,9 +53,9 @@ export function isGitWorkTree(dir: string, git: GitExec = runGit): boolean {
 
 export type CommitOutcome = { committed: true } | { committed: false; reason: string };
 
-export function commitMemory(dir: string, message: string, git: GitExec = runGit): CommitOutcome {
+export function commitPaths(dir: string, candidates: string[], message: string, git: GitExec = runGit): CommitOutcome {
   if (!isGitWorkTree(dir, git)) return { committed: false, reason: "not a git work tree" };
-  const paths = COMMIT_PATHS.filter(
+  const paths = candidates.filter(
     (path) => existsSync(join(dir, path)) || git(["ls-files", "--", path], dir).stdout.trim() !== "",
   );
   if (paths.length === 0) return { committed: false, reason: "nothing to commit" };
@@ -66,4 +66,8 @@ export function commitMemory(dir: string, message: string, git: GitExec = runGit
   const commit = git(["commit", "--only", "-m", message, "--", ...paths], dir);
   if (commit.status !== 0) return { committed: false, reason: `git commit failed: ${commit.stderr.trim()}` };
   return { committed: true };
+}
+
+export function commitMemory(dir: string, message: string, git: GitExec = runGit): CommitOutcome {
+  return commitPaths(dir, COMMIT_PATHS, message, git);
 }
