@@ -8,6 +8,7 @@ import { countHumanMessages } from "../src/human.ts";
 import { loadProposalState, snooze, updateProposalState } from "../src/proposal-state.ts";
 import { readProposals } from "../src/proposals.ts";
 import { PROPOSALS_WIDGET } from "../src/review.ts";
+import { PROPOSAL_ENTRY, proposalEntryMarkdown, type ProposalEntryData } from "../src/review-card.ts";
 import extension, { createExtension, USER_MEMORY_SECTION, type ExtensionDeps } from "../src/index.ts";
 import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
@@ -60,8 +61,9 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   const applyJobs: ApplyJob[] = [];
   const notes: { text: string; level: string }[] = [];
   const widgets = new Map<string, string[] | undefined>();
-  const script = { cards: [] as unknown[], selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
-  const shown = { cards: [] as unknown[], selects: [] as string[], editors: [] as (string | undefined)[] };
+  const entryRenderers = new Map<string, unknown>();
+  const script = { selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
+  const shown = { selects: [] as string[], editors: [] as (string | undefined)[] };
   const session = {
     id: "sess-1",
     file: join(fixture.root, "session.jsonl") as string | undefined,
@@ -82,6 +84,9 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     appendEntry(customType: string, data: unknown) {
       session.branch.push({ type: "custom", id: `c${session.branch.length}`, customType, data });
     },
+    registerEntryRenderer(customType: string, renderer: unknown) {
+      entryRenderers.set(customType, renderer);
+    },
   };
   const ctx = (cwd = "/work/apollo", mode = "tui") => ({
     cwd,
@@ -90,17 +95,10 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     ui: {
       notify: (text: string, level = "info") => notes.push({ text, level }),
       setWidget: (key: string, content: string[] | undefined) => widgets.set(key, content),
-      custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown, options: unknown) => {
-        const tui = { terminal: { rows: 40, columns: 120 }, requestRender: () => undefined };
-        const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text, underline: (text: string) => text, strikethrough: (text: string) => text };
-        let finished: unknown;
-        const component = factory(tui, theme, {}, (result) => (finished = result)) as { render: (width: number) => string[] };
-        shown.cards.push({ lines: component.render(120), options });
-        return finished ?? script.cards.shift() ?? { action: "stop" };
-      },
-      select: async (title: string) => {
+      select: async (title: string, options: string[]) => {
         shown.selects.push(title);
-        return script.selects.shift();
+        const choice = script.selects.shift();
+        return choice === undefined ? undefined : options.find((option) => option.startsWith(choice));
       },
       editor: async (_title: string, prefill?: string) => {
         shown.editors.push(prefill);
@@ -159,7 +157,7 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   async function typed(text: string, source = "interactive", mode = "tui") {
     await (await deliver(text, source, { mode }))();
   }
-  return { handlers, commands, jobs, applyJobs, notes, widgets, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
+  return { handlers, commands, jobs, applyJobs, notes, widgets, entryRenderers, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
 }
 
 function userMessages(count: number): unknown[] {
@@ -179,6 +177,7 @@ test("the default export registers every handler and the memory command without 
       return () => undefined;
     },
     registerCommand: (name: string) => commands.push(name),
+    registerEntryRenderer: () => undefined,
     getSettings: () => {
       throw new Error("settings must not be read at load time");
     },
@@ -570,7 +569,7 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
-  assert.equal(h.shown.cards.length + h.shown.selects.length, 0);
+  assert.equal(h.shown.selects.length + h.session.branch.length, 0);
 
   for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
     const other = harness(fixture);
@@ -600,22 +599,24 @@ test("a notice with no pending proposals clears once the user types", async () =
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
 
-test("/memory proposals reviews each card in an overlay and queues one apply job with the comments", async () => {
+test("/memory proposals shows each proposal in the transcript and queues one apply job with the comments", async () => {
   const fixture = proposalFixture();
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   const [memo, hook, rebase] = readProposals(fixture.dir);
-  h.script.cards.push({ action: "comment", comment: "put it under Context" }, { action: "apply" }, { action: "omit" }, { action: "discard" });
+  h.script.selects.push("Comment…", "Apply", "Omit", "Discard");
+  h.script.editors.push("put it under Context");
   const note = await h.command("proposals");
 
-  assert.equal(h.shown.cards.length, 4);
-  const firstCard = h.shown.cards[0] as { lines: string[]; options: { overlay: boolean } };
-  assert.equal(firstCard.options.overlay, true);
-  const text = firstCard.lines.join("\n");
-  assert.match(text, /Do not wrap a provider value in useMemo/);
-  assert.match(text, /Providers live next to the feature/);
-  assert.match(text, /~\/\.pi\/agent\/skills\/react-code\/SKILL\.md/);
-  assert.match((h.shown.cards[1] as { lines: string[] }).lines.join("\n"), /Comment put it under Context/);
+  const entries = h.session.branch.filter((entry) => (entry as { customType?: string }).customType === PROPOSAL_ENTRY) as { data: ProposalEntryData }[];
+  assert.equal(entries.length, 3);
+  assert.ok(h.entryRenderers.has(PROPOSAL_ENTRY));
+  const first = proposalEntryMarkdown(entries[0]!.data, false);
+  assert.match(first, /Do not wrap a provider value in useMemo/);
+  assert.match(first, /Providers live next to the feature/);
+  assert.match(first, /~\/\.pi\/agent\/skills\/react-code\/SKILL\.md:\d+/);
+  assert.equal(h.shown.selects.length, 4);
+  assert.match(h.shown.selects[1]!, /Proposal 1\/3 for react-code · comment: put it under Context/);
 
   assert.equal(h.applyJobs.length, 1);
   assert.deepEqual(h.applyJobs[0]!.proposals, [
@@ -631,12 +632,12 @@ test("/memory proposals reviews each card in an overlay and queues one apply job
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
 
-test("Esc stops the review and leaves the remaining proposals untouched", async () => {
+test("dismissing the action dialog stops the review and leaves the remaining proposals untouched", async () => {
   const fixture = proposalFixture();
   const h = harness(fixture);
-  h.script.cards.push({ action: "omit" }, { action: "stop" });
+  h.script.selects.push("Omit", undefined);
   await h.command("proposals");
-  assert.equal(h.shown.cards.length, 2);
+  assert.equal(h.shown.selects.length, 2);
   assert.equal(h.applyJobs.length, 0);
   assert.equal(readProposals(fixture.dir).length, 3);
   assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);
@@ -648,7 +649,7 @@ test("RPC clients review through select and editor dialogs, and print mode lists
   h.script.selects.push("Comment…", "Apply", undefined);
   h.script.editors.push(" only the first sentence ");
   await h.command("proposals", h.ctx("/work/apollo", "rpc"));
-  assert.equal(h.shown.cards.length, 0);
+  assert.equal(h.session.branch.length, 0);
   assert.equal(h.shown.selects.length, 3);
   assert.match(h.shown.selects[0]!, /^Memory proposal 1\/3 for react-code \(2026-10-09\)\nRule: Do not wrap/);
   assert.match(h.shown.selects[1]!, /Comment: only the first sentence/);

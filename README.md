@@ -134,12 +134,12 @@ pi loads the extension's TypeScript directly. The writer runs as a separate Node
 
 When pi starts in the terminal UI and proposals are waiting, a line above the editor says how many, for example `3 memory proposals — /memory proposals`. It never opens a dialog by itself, so the chat input stays free, and it does not appear for `/new`, `/resume`, forks, or modes without the terminal UI. The same line reports the result of the last apply job once, for example `last apply: applied 2 to react-code · 1 skipped`.
 
-`/memory proposals` opens one card per proposal. The left side shows the skill, the rule, why, the quoted evidence, the date, and any comment you saved; the right side shows the target skill's `SKILL.md`, scrolled to the heading that shares the most words with the rule. `j`/`k` scroll the active pane a line, `J`/`K` a page, `g`/`G` jump to the top or bottom, and Tab switches the active pane; a long proposal starts active, and each pane's header shows its position. `h`/`l` move between actions and Enter runs the highlighted one. Narrow terminals stack the two. Each proposal has an id derived from its skill, rule and session, so the file format stays as the writer writes it. The actions are:
+`/memory proposals` writes each proposal into the chat as a card: the skill, the rule, why, the quoted evidence, the date, any comment you saved, and the section of the target skill's `SKILL.md` that shares the most words with the rule, with its `path:line`. Long sections are cut at 30 lines, and ctrl+o expands them. The cards are display-only and never reach the model, and because they are part of the chat you read them with the terminal's own scrolling. A small dialog under the card asks for the action. Each proposal has an id derived from its skill, rule and session, so the file format stays as the writer writes it. The actions are:
 
-- Apply (`a`) approves the proposal for the apply job.
-- Comment… (`c`) opens a multi-line editor for an instruction to the apply job, such as "only the first sentence" or "put it under Providers". The comment is saved with the proposal, kept if you omit it, and the card asks again.
-- Discard (`d`) deletes the entry from `proposals.md` and commits that file in the memory directory. It waits for a running writer, because the writer appends to the same file.
-- Omit (`o`) hides the proposal for 24 hours; then it counts as pending again.
+- Apply approves the proposal for the apply job.
+- Comment… opens a multi-line editor for an instruction to the apply job, such as "only the first sentence" or "put it under Providers". The comment is saved with the proposal, kept if you omit it, and the card asks again.
+- Discard deletes the entry from `proposals.md` and commits that file in the memory directory. It waits for a running writer, because the writer appends to the same file.
+- Omit hides the proposal for 24 hours; then it counts as pending again.
 - Esc stops reviewing and leaves the remaining proposals as they are.
 
 An RPC client gets the same actions as a select dialog per proposal and an editor dialog for comments. Without any UI the command lists the pending proposals.

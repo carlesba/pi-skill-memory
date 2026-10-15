@@ -1,3 +1,4 @@
+import { PROPOSAL_ENTRY, proposalEntryComponent, type ProposalEntryData } from "./review-card.ts";
 import { readFileSync } from "node:fs";
 import { relative } from "node:path";
 import { homedir } from "node:os";
@@ -39,7 +40,7 @@ import {
   dialogReviewUI,
   formatProposalList,
   loadPrunedState,
-  overlayReviewUI,
+  transcriptReviewUI,
   PROPOSALS_WIDGET,
   proposalWidgetLine,
   reviewProposals,
@@ -386,7 +387,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         return;
       }
       const lookup = skillSource(session, ctx);
-      const outcome = await reviewProposals(ctx.mode === "tui" ? overlayReviewUI(ctx) : dialogReviewUI(ctx), {
+      const outcome = await reviewProposals(ctx.mode === "tui" ? transcriptReviewUI(ctx, (type, data) => pi.appendEntry(type, data)) : dialogReviewUI(ctx), {
         config,
         now: deps.now,
         skillFor: (skill) => {
@@ -425,6 +426,10 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       session.manualWriteLeaf = ctx.sessionManager.getLeafId();
       notify(ctx, `Queued the memory writer for this session (${result.runner} runner, job ${result.jobFile}).`);
     }
+
+    pi.registerEntryRenderer<ProposalEntryData>(PROPOSAL_ENTRY, (entry, { expanded }, theme) =>
+      entry.data ? proposalEntryComponent(entry.data, expanded, theme) : undefined,
+    );
 
     pi.registerCommand(COMMAND_NAME, {
       description: "Memory skills: status, explain, write, proposals",
