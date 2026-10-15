@@ -149,7 +149,8 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
     "--with-nth=2..",
     "--border=rounded",
     "--border-label= memory proposals ",
-    "--preview-window=up,65%,wrap,border-bottom",
+    "--preview-window=up,78%,wrap,border-bottom",
+    "--color=16",
     `--preview=${self} show {1} | ${preview}`,
     `--header=${REVIEW_KEYS}`,
     `--bind=${act("a", "apply")}`,
@@ -163,7 +164,7 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
 }
 
 export function previewCommand(which: Which): string {
-  return which("bat") ? "bat --language=md --color=always --style=plain --paging=never" : "cat";
+  return which("bat") ? 'bat --language=md --color=always --style=plain --paging=never --theme="${BAT_THEME:-ansi}"' : "cat";
 }
 
 export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {
