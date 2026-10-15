@@ -1,5 +1,3 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Key, Markdown, matchesKey, truncateToWidth, type Component, type Focusable, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { splitFrontmatter } from "./frontmatter.ts";
 import type { Proposal } from "./proposals.ts";
 
@@ -97,37 +95,11 @@ export function proposalMarkdown(input: CardInput): string {
   return parts.join("\n\n");
 }
 
-export function markdownTheme(theme: Theme): MarkdownTheme {
-  return {
-    heading: (text) => theme.fg("mdHeading", text),
-    link: (text) => theme.fg("mdLink", text),
-    linkUrl: (text) => theme.fg("mdLinkUrl", text),
-    code: (text) => theme.fg("mdCode", text),
-    codeBlock: (text) => theme.fg("mdCodeBlock", text),
-    codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
-    quote: (text) => theme.fg("mdQuote", text),
-    quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
-    hr: (text) => theme.fg("mdHr", text),
-    listBullet: (text) => theme.fg("mdListBullet", text),
-    bold: (text) => theme.bold(text),
-    italic: (text) => theme.italic(text),
-    strikethrough: (text) => theme.strikethrough(text),
-    underline: (text) => theme.underline(text),
-  };
-}
-
-export const PROPOSAL_ENTRY = "pi-skill-memory-proposal";
-export const SECTION_PREVIEW_LINES = 30;
 
 export interface SkillSection {
   heading: string | null;
   line: number;
   text: string;
-}
-
-export interface ProposalEntryData {
-  input: Omit<CardInput, "skillText">;
-  section: SkillSection | null;
 }
 
 export function skillSection(skillText: string, heading: string | null): SkillSection {
@@ -146,80 +118,4 @@ export function skillSection(skillText: string, heading: string | null): SkillSe
     }
   }
   return { heading, line: start + 1, text: lines.slice(start, end).join("\n").trim() };
-}
-
-export function proposalEntryData(input: CardInput): ProposalEntryData {
-  const { skillText, ...rest } = input;
-  if (skillText === null) return { input: rest, section: null };
-  const body = skillBody(skillText);
-  return { input: rest, section: skillSection(skillText, relevantHeading(body, `${input.proposal.rule} ${input.proposal.why}`)) };
-}
-
-export function proposalEntryMarkdown(data: ProposalEntryData, expanded: boolean): string {
-  const { input, section } = data;
-  const parts = [`**Memory proposal ${input.position}/${input.total}** · \`${input.proposal.skill}\` · ${input.proposal.date}`, proposalMarkdown({ ...input, skillText: null })];
-  if (section === null) {
-    parts.push(`*No SKILL.md found for ${input.proposal.skill} in the skill index.*`);
-    return parts.join("\n\n");
-  }
-  const where = `${input.skillPath ?? input.proposal.skill}:${section.line}`;
-  const lines = unwrapParagraphs(section.text).split("\n");
-  const cut = !expanded && lines.length > SECTION_PREVIEW_LINES;
-  parts.push("---", `*Closest section by shared words, in \`${where}\`:*`, (cut ? lines.slice(0, SECTION_PREVIEW_LINES) : lines).join("\n"));
-  if (cut) parts.push(`*… ${lines.length - SECTION_PREVIEW_LINES} more lines, ctrl+o expands*`);
-  return parts.join("\n\n");
-}
-
-export function proposalEntryComponent(data: ProposalEntryData, expanded: boolean, theme: Theme): Component {
-  const box = new Box(1, 0);
-  box.addChild(new Markdown(`---\n\n${proposalEntryMarkdown(data, expanded)}`, 0, 0, markdownTheme(theme)));
-  return box;
-}
-
-export type BarChoice = "apply" | "comment" | "discard" | "omit" | "stop";
-
-export const BAR_ACTIONS: { key: string; value: BarChoice; label: string }[] = [
-  ...CARD_ACTIONS.map(({ key, value, label }) => ({ key, value, label })),
-  { key: "s", value: "stop", label: "Stop reviewing" },
-];
-
-export class ActionBar implements Component, Focusable {
-  focused = false;
-  private selected = 0;
-  private readonly title: string;
-  private readonly theme: Theme;
-  private readonly requestRender: () => void;
-  private readonly done: (choice: BarChoice) => void;
-
-  constructor(title: string, theme: Theme, requestRender: () => void, done: (choice: BarChoice) => void) {
-    this.title = title;
-    this.theme = theme;
-    this.requestRender = requestRender;
-    this.done = done;
-  }
-
-  handleInput(data: string): void {
-    const shortcut = BAR_ACTIONS.find((action) => data === action.key);
-    if (shortcut) return this.done(shortcut.value);
-    if (matchesKey(data, Key.escape)) return this.done("stop");
-    if (matchesKey(data, Key.enter)) return this.done(BAR_ACTIONS[this.selected]!.value);
-    const step = data === "l" || matchesKey(data, Key.right) || matchesKey(data, Key.tab) ? 1 : data === "h" || matchesKey(data, Key.left) ? -1 : 0;
-    if (step === 0) return;
-    this.selected = (this.selected + step + BAR_ACTIONS.length) % BAR_ACTIONS.length;
-    this.requestRender();
-  }
-
-  invalidate(): void {}
-
-  render(width: number): string[] {
-    const bar = BAR_ACTIONS.map((action, index) => {
-      const label = `[${action.key}] ${action.label}`;
-      return index === this.selected ? this.theme.fg("accent", this.theme.bold(`› ${label}`)) : this.theme.fg("muted", `  ${label}`);
-    }).join(" ");
-    return [
-      truncateToWidth(` ${this.theme.fg("accent", this.title)}`, width),
-      truncateToWidth(bar, width),
-      truncateToWidth(this.theme.fg("dim", "  a/c/d/o/s or h/l and Enter · Esc stops · scroll up to read the card"), width),
-    ];
-  }
 }

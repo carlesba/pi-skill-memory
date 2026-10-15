@@ -12,7 +12,7 @@ import {
   type ProposalState,
 } from "./proposal-state.ts";
 import { readProposals, type Proposal } from "./proposals.ts";
-import { ActionBar, CARD_ACTIONS, PROPOSAL_ENTRY, proposalEntryData, type BarChoice, type CardInput, type CardResult, type ProposalEntryData } from "./review-card.ts";
+import { CARD_ACTIONS, type CardInput, type CardResult } from "./review-card.ts";
 import type { ApplyProposal } from "./writer/job.ts";
 import type { RunRecord } from "./writer/runs.ts";
 
@@ -179,27 +179,6 @@ export function formatProposalList(proposals: Proposal[]): string {
 }
 
 type CardContext = Pick<ExtensionContext, "ui">;
-
-export type AppendEntry = (customType: string, data: ProposalEntryData) => void;
-
-export function transcriptReviewUI(ctx: CardContext, appendEntry: AppendEntry): ReviewUI {
-  let shown: string | null = null;
-  return {
-    card: async (input) => {
-      if (shown !== input.proposal.id) {
-        appendEntry(PROPOSAL_ENTRY, proposalEntryData(input));
-        shown = input.proposal.id;
-      }
-      const note = input.comment.trim() === "" ? "" : ` · comment: ${input.comment.trim()}`;
-      const title = `Proposal ${input.position}/${input.total} for ${input.proposal.skill}${note}`;
-      const choice = await ctx.ui.custom<BarChoice>((tui, theme, _keybindings, done) => new ActionBar(title, theme, () => tui.requestRender(), done));
-      if (choice === "stop" || choice === undefined) return { action: "stop" };
-      if (choice !== "comment") return { action: choice };
-      const comment = await ctx.ui.editor(`Comment for the apply job on ${input.proposal.skill}`, input.comment);
-      return { action: "comment", comment: comment === undefined ? input.comment : comment.trim() };
-    },
-  };
-}
 
 export function dialogCardTitle(input: CardInput): string {
   const lines = [

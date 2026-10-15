@@ -1,5 +1,6 @@
-import { PROPOSAL_ENTRY, proposalEntryComponent, type ProposalEntryData } from "./review-card.ts";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { CONFIG_ENV } from "./cli.ts";
 import { relative } from "node:path";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -40,7 +41,6 @@ import {
   dialogReviewUI,
   formatProposalList,
   loadPrunedState,
-  transcriptReviewUI,
   PROPOSALS_WIDGET,
   proposalWidgetLine,
   reviewProposals,
@@ -71,6 +71,7 @@ export interface ExtensionDeps {
   home: string;
   packageRoot: string;
   which: Which;
+  runReviewApp: (config: MemoryConfig, ctx: ExtensionCommandContext) => Promise<number>;
 }
 
 interface SessionState {
@@ -84,7 +85,7 @@ interface SessionState {
   loaded: Set<string>;
   manualWriteLeaf: string | null | undefined;
   pendingInputs: PendingInput[];
-  widgetNoticeOnly: boolean;
+  widgetClearsOnInput: boolean;
 }
 
 type SessionView = Pick<ExtensionContext, "cwd" | "sessionManager">;
@@ -107,6 +108,21 @@ export function userMemorySection(snapshot: string): string {
   return `${USER_MEMORY_HEADING}\n\n${snapshot}`;
 }
 
+export function runReviewApp(config: MemoryConfig, ctx: ExtensionCommandContext): Promise<number> {
+  return ctx.ui.custom<number>((tui, _theme, _keybindings, done) => {
+    tui.stop();
+    process.stdout.write("\x1b[2J\x1b[H");
+    const result = spawnSync(process.execPath, [join(PACKAGE_ROOT, "src", "cli.ts"), "review"], {
+      stdio: "inherit",
+      env: { ...process.env, [CONFIG_ENV]: JSON.stringify(config) },
+    });
+    tui.start();
+    tui.requestRender(true);
+    done(result.status ?? 1);
+    return { render: () => [], invalidate: () => {} };
+  });
+}
+
 export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: ExtensionAPI) => void {
   return function piSkillMemory(pi: ExtensionAPI): void {
     const which = overrides.which ?? findOnPath;
@@ -118,6 +134,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       home: overrides.home ?? homedir(),
       packageRoot: overrides.packageRoot ?? PACKAGE_ROOT,
       which,
+      runReviewApp: overrides.runReviewApp ?? runReviewApp,
     };
     let state: SessionState | null = null;
     let listed: ListedTopic[] = [];
@@ -135,7 +152,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         loaded: new Set(),
         manualWriteLeaf: undefined,
         pendingInputs: [],
-        widgetNoticeOnly: false,
+        widgetClearsOnInput: false,
       };
       return state;
     }
@@ -187,8 +204,13 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       const notice = withNotice ? applyNotice(lastApply, proposalState) : null;
       const line = proposalWidgetLine(pending, notice);
       ctx.ui.setWidget(PROPOSALS_WIDGET, line === null ? undefined : [line]);
-      session.widgetNoticeOnly = line !== null && pending === 0;
+      session.widgetClearsOnInput = line !== null;
       if (notice && lastApply) updateProposalState(session.config.stateDir, (current) => (current.applyNoticeShown = lastApply.ts));
+    }
+
+    function clearProposalWidget(session: SessionState, ctx: Pick<ExtensionContext, "ui">): void {
+      session.widgetClearsOnInput = false;
+      ctx.ui.setWidget(PROPOSALS_WIDGET, undefined);
     }
 
     pi.on("session_start", (event, ctx) => {
@@ -266,8 +288,8 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     pi.on("input", (event: InputEvent, ctx: ModeView & Pick<ExtensionContext, "ui">) => {
       try {
         const session = current(ctx);
-        if (session.widgetNoticeOnly) {
-          session.widgetNoticeOnly = false;
+        if (session.widgetClearsOnInput) {
+          session.widgetClearsOnInput = false;
           ctx.ui.setWidget(PROPOSALS_WIDGET, undefined);
         }
         rememberInput(session.pendingInputs, {
@@ -386,8 +408,17 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         notify(ctx, formatProposalList(pendingProposals(proposals, loadPrunedState(config, proposals), deps.now())));
         return;
       }
+      if (ctx.mode === "tui") {
+        const code = await deps.runReviewApp(config, ctx);
+        const proposals = readProposals(config.dir);
+        const remaining = pendingProposals(proposals, loadPrunedState(config, proposals), deps.now()).length;
+        clearProposalWidget(session, ctx);
+        if (code !== 0) notify(ctx, `pi-memory review exited with code ${code}; is fzf installed?`, "warning");
+        else notify(ctx, `${remaining} memory proposal${remaining === 1 ? "" : "s"} pending.`);
+        return;
+      }
       const lookup = skillSource(session, ctx);
-      const outcome = await reviewProposals(ctx.mode === "tui" ? transcriptReviewUI(ctx, (type, data) => pi.appendEntry(type, data)) : dialogReviewUI(ctx), {
+      const outcome = await reviewProposals(dialogReviewUI(ctx), {
         config,
         now: deps.now,
         skillFor: (skill) => {
@@ -412,7 +443,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       });
       const proposals = readProposals(config.dir);
       const remaining = pendingProposals(proposals, loadPrunedState(config, proposals), deps.now()).length;
-      showProposalWidget(session, ctx, false);
+      clearProposalWidget(session, ctx);
       notify(ctx, describeReview(outcome, remaining), outcome.errors.length > 0 ? "warning" : "info");
     }
 
@@ -426,10 +457,6 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       session.manualWriteLeaf = ctx.sessionManager.getLeafId();
       notify(ctx, `Queued the memory writer for this session (${result.runner} runner, job ${result.jobFile}).`);
     }
-
-    pi.registerEntryRenderer<ProposalEntryData>(PROPOSAL_ENTRY, (entry, { expanded }, theme) =>
-      entry.data ? proposalEntryComponent(entry.data, expanded, theme) : undefined,
-    );
 
     pi.registerCommand(COMMAND_NAME, {
       description: "Memory skills: status, explain, write, proposals",

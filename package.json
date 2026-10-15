@@ -19,7 +19,8 @@
     "dist",
     "prompts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "bin"
   ],
   "pi": {
     "extensions": [
@@ -40,5 +41,8 @@
     "@earendil-works/pi-coding-agent": "^1.1.0",
     "@types/node": "^24.19.1",
     "typescript": "^5.9.3"
+  },
+  "bin": {
+    "pi-memory": "bin/pi-memory"
   }
 }

@@ -8,7 +8,6 @@ import { countHumanMessages } from "../src/human.ts";
 import { loadProposalState, snooze, updateProposalState } from "../src/proposal-state.ts";
 import { readProposals } from "../src/proposals.ts";
 import { PROPOSALS_WIDGET } from "../src/review.ts";
-import { PROPOSAL_ENTRY, proposalEntryMarkdown, type ProposalEntryData } from "../src/review-card.ts";
 import extension, { createExtension, USER_MEMORY_SECTION, type ExtensionDeps } from "../src/index.ts";
 import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
@@ -61,9 +60,9 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   const applyJobs: ApplyJob[] = [];
   const notes: { text: string; level: string }[] = [];
   const widgets = new Map<string, string[] | undefined>();
-  const entryRenderers = new Map<string, unknown>();
-  const script = { keys: [] as string[], selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
-  const shown = { bars: [] as string[], selects: [] as string[], editors: [] as (string | undefined)[] };
+  const script = { selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
+  const reviewAppExit = { code: 0 };
+  const shown = { reviewApps: 0, selects: [] as string[], editors: [] as (string | undefined)[] };
   const session = {
     id: "sess-1",
     file: join(fixture.root, "session.jsonl") as string | undefined,
@@ -84,9 +83,6 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     appendEntry(customType: string, data: unknown) {
       session.branch.push({ type: "custom", id: `c${session.branch.length}`, customType, data });
     },
-    registerEntryRenderer(customType: string, renderer: unknown) {
-      entryRenderers.set(customType, renderer);
-    },
   };
   const ctx = (cwd = "/work/apollo", mode = "tui") => ({
     cwd,
@@ -95,19 +91,6 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     ui: {
       notify: (text: string, level = "info") => notes.push({ text, level }),
       setWidget: (key: string, content: string[] | undefined) => widgets.set(key, content),
-      custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown) => {
-        const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
-        let finished: unknown = "stop";
-        let closed = false;
-        const component = factory({ requestRender: () => undefined }, theme, {}, (result) => {
-          finished = result;
-          closed = true;
-        }) as { render: (width: number) => string[]; handleInput: (data: string) => void };
-        shown.bars.push(component.render(120).join("\n"));
-        const key = script.keys.shift();
-        if (key !== undefined) component.handleInput(key);
-        return closed ? finished : "stop";
-      },
       select: async (title: string, options: string[]) => {
         shown.selects.push(title);
         const choice = script.selects.shift();
@@ -137,6 +120,10 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     home: fixture.root,
     packageRoot: "/pkg",
     which: () => null,
+    runReviewApp: async () => {
+      shown.reviewApps++;
+      return reviewAppExit.code;
+    },
     ...options.deps,
   })(pi as unknown as ExtensionAPI);
   async function fire(event: string, payload: Record<string, unknown>, context = ctx()): Promise<unknown> {
@@ -170,7 +157,7 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   async function typed(text: string, source = "interactive", mode = "tui") {
     await (await deliver(text, source, { mode }))();
   }
-  return { handlers, commands, jobs, applyJobs, notes, widgets, entryRenderers, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
+  return { reviewAppExit, handlers, commands, jobs, applyJobs, notes, widgets, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
 }
 
 function userMessages(count: number): unknown[] {
@@ -190,7 +177,6 @@ test("the default export registers every handler and the memory command without 
       return () => undefined;
     },
     registerCommand: (name: string) => commands.push(name),
-    registerEntryRenderer: () => undefined,
     getSettings: () => {
       throw new Error("settings must not be read at load time");
     },
@@ -582,7 +568,7 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
-  assert.equal(h.shown.bars.length + h.shown.selects.length + h.session.branch.length, 0);
+  assert.equal(h.shown.reviewApps + h.shown.selects.length, 0);
 
   for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
     const other = harness(fixture);
@@ -602,6 +588,14 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   assert.match(await again.command("status"), /last proposal apply: ok at 2025-03-01T11:00:00.000Z, applied 1 to git · 1 skipped/);
 });
 
+test("the startup proposal count clears once the user types", async () => {
+  const h = harness(proposalFixture());
+  await h.fire("session_start", { reason: "startup" });
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
+  await h.fire("input", { text: "hello", source: "interactive" });
+  assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
+});
+
 test("a notice with no pending proposals clears once the user types", async () => {
   const fixture = makeFixture([]);
   appendRun(fixture.stateDir, { kind: "apply", ts: "2025-03-01T11:00:00.000Z", session: "s0", outcome: "ok", topics: ["git"], summary: "applied 1 to git" });
@@ -612,49 +606,19 @@ test("a notice with no pending proposals clears once the user types", async () =
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
 
-test("/memory proposals shows each proposal in the transcript and queues one apply job with the comments", async () => {
+test("/memory proposals in the TUI opens the review app, then clears the widget and reports the count", async () => {
   const fixture = proposalFixture();
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
-  const [memo, hook, rebase] = readProposals(fixture.dir);
-  h.script.keys.push("c", "a", "o", "d");
-  h.script.editors.push("put it under Context");
+  const [first] = readProposals(fixture.dir);
+  h.reviewAppExit.code = 0;
+  updateProposalState(fixture.stateDir, (state) => snooze(state, first!.id, new Date("2025-03-01T12:00:00.000Z")));
   const note = await h.command("proposals");
-
-  const entries = h.session.branch.filter((entry) => (entry as { customType?: string }).customType === PROPOSAL_ENTRY) as { data: ProposalEntryData }[];
-  assert.equal(entries.length, 3);
-  assert.ok(h.entryRenderers.has(PROPOSAL_ENTRY));
-  const first = proposalEntryMarkdown(entries[0]!.data, false);
-  assert.match(first, /Do not wrap a provider value in useMemo/);
-  assert.match(first, /Providers live next to the feature/);
-  assert.match(first, /~\/\.pi\/agent\/skills\/react-code\/SKILL\.md:\d+/);
-  assert.equal(h.shown.bars.length, 4);
-  assert.match(h.shown.bars[0]!, /\[a\] Apply.*\[c\] Comment….*\[d\] Discard.*\[o\] Omit.*\[s\] Stop reviewing/);
-  assert.match(h.shown.bars[1]!, /Proposal 1\/3 for react-code · comment: put it under Context/);
-
-  assert.equal(h.applyJobs.length, 1);
-  assert.deepEqual(h.applyJobs[0]!.proposals, [
-    { id: memo!.id, skill: "react-code", rule: memo!.rule, why: memo!.why, evidence: memo!.evidence, comment: "put it under Context" },
-  ]);
-  assert.equal(h.applyJobs[0]!.config.dir, fixture.dir);
-  assert.deepEqual(readProposals(fixture.dir).map((proposal) => proposal.id), [memo!.id, hook!.id]);
-  const state = loadProposalState(fixture.stateDir);
-  assert.equal(state.proposals[memo!.id]!.applyingSince, "2025-03-01T12:00:00.000Z");
-  assert.equal(state.proposals[hook!.id]!.snoozedUntil, "2025-03-02T12:00:00.000Z");
-  assert.equal(state.proposals[rebase!.id], undefined);
-  assert.match(note, /^Queued 1 proposal for the background apply job \(detached runner, job .*\); it commits each skill locally and never pushes\. Discarded 1, omitted 1 for 24 hours\. 0 pending\./);
+  assert.equal(h.shown.reviewApps, 1);
+  assert.equal(note, "2 memory proposals pending.");
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
-});
-
-test("s stops the review and leaves the remaining proposals untouched", async () => {
-  const fixture = proposalFixture();
-  const h = harness(fixture);
-  h.script.keys.push("o", "s");
-  await h.command("proposals");
-  assert.equal(h.shown.bars.length, 2);
-  assert.equal(h.applyJobs.length, 0);
-  assert.equal(readProposals(fixture.dir).length, 3);
-  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);
+  h.reviewAppExit.code = 2;
+  assert.match(await h.command("proposals"), /exited with code 2; is fzf installed\?/);
 });
 
 test("RPC clients review through select and editor dialogs, and print mode lists the proposals", async () => {
@@ -663,7 +627,7 @@ test("RPC clients review through select and editor dialogs, and print mode lists
   h.script.selects.push("Comment…", "Apply", undefined);
   h.script.editors.push(" only the first sentence ");
   await h.command("proposals", h.ctx("/work/apollo", "rpc"));
-  assert.equal(h.session.branch.length, 0);
+  assert.equal(h.shown.reviewApps, 0);
   assert.equal(h.shown.selects.length, 3);
   assert.match(h.shown.selects[0]!, /^Memory proposal 1\/3 for react-code \(2026-10-09\)\nRule: Do not wrap/);
   assert.match(h.shown.selects[1]!, /Comment: only the first sentence/);
