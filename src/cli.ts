@@ -14,10 +14,8 @@ import type { QueuedJob } from "./writer/job.ts";
 import { PACKAGE_ROOT } from "./writer/prompts.ts";
 
 export const CONFIG_ENV = "PI_SKILL_MEMORY_CONFIG";
-export const MESSAGE_FILE = "review-message.txt";
 export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
 export const CLI_SESSION = "pi-memory-review";
-export const REVIEW_KEYS = "a apply · c comment · d discard · o omit · n/p move · j/k, ctrl-d/u or wheel scroll preview · q quit";
 
 export interface CliDeps {
   config: MemoryConfig;
@@ -28,7 +26,7 @@ export interface CliDeps {
   which: Which;
   enqueue: (job: QueuedJob) => { runner: string; jobFile: string };
   editComment: (initial: string, skill: string) => string | null;
-  runFzf: (args: string[], listCommand: string) => number;
+  runFzf: (args: string[], input: string) => string;
 }
 
 export interface CliResult {
@@ -114,32 +112,34 @@ export function showMarkdown(proposal: Proposal, state: ProposalState, deps: Pic
   return [...head, "---", `Closest section by shared words, in ${displayPath(entry.path, deps.home)}:${section.line}`, section.text].join("\n\n") + "\n";
 }
 
-function setMessage(config: MemoryConfig, message: string): void {
-  try {
-    writeFileSync(join(config.stateDir, MESSAGE_FILE), message);
-  } catch {
-    return;
-  }
-}
-
-export function headerText(config: MemoryConfig): string {
-  let message = "";
-  try {
-    message = readFileSync(join(config.stateDir, MESSAGE_FILE), "utf8").trim();
-  } catch {
-    message = "";
-  }
-  return message === "" ? REVIEW_KEYS : `${REVIEW_KEYS}\n${message}`;
-}
-
 export function selfCommand(packageRoot: string): string {
   return [process.execPath, join(packageRoot, "src", "cli.ts")].map(shellQuote).join(" ");
 }
 
-export function fzfArgs(packageRoot: string, preview: string): string[] {
-  const self = selfCommand(packageRoot);
-  const act = (key: string, verb: string, silent = true) =>
-    `${key}:${silent ? "execute-silent" : "execute"}(${self} ${verb} {1})+reload(${self} list)+transform-header(${self} header)+refresh-preview`;
+export function previewCommand(which: Which): string {
+  return which("bat") ? 'bat --language=md --color=always --style=plain --paging=never --theme="${BAT_THEME:-ansi}"' : "cat";
+}
+
+export type ReviewChoice = "apply" | "comment" | "discard" | "omit" | "skip" | "quit";
+
+export const REVIEW_ACTIONS: { key: string; choice: ReviewChoice; label: string }[] = [
+  { key: "a", choice: "apply", label: "Apply — queue it for the background apply job" },
+  { key: "c", choice: "comment", label: "Comment — add an instruction for the apply job" },
+  { key: "d", choice: "discard", label: "Discard — delete it from proposals.md" },
+  { key: "o", choice: "omit", label: "Omit — hide it for 24 hours" },
+  { key: "s", choice: "skip", label: "Skip — leave it for now and show the next one" },
+  { key: "q", choice: "quit", label: "Quit" },
+];
+
+export const REVIEW_KEYS = "a/c/d/o/s/q or Enter · j/k, ctrl-d/u or wheel scroll the proposal";
+
+export function actionLines(): string {
+  return REVIEW_ACTIONS.map((action) => `${action.key}\t${action.key}  ${action.label}\n`).join("");
+}
+
+export function cardArgs(input: { packageRoot: string; preview: string; id: string; position: number; total: number; skill: string; message: string }): string[] {
+  const show = `${selfCommand(input.packageRoot)} show ${shellQuote(input.id)} | ${input.preview}`;
+  const header = input.message === "" ? REVIEW_KEYS : `${REVIEW_KEYS}\n${input.message}`;
   return [
     "--with-shell=/bin/sh -c",
     "--ansi",
@@ -149,24 +149,98 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
     "--delimiter=\t",
     "--with-nth=2..",
     "--border=rounded",
-    "--border-label= memory proposals ",
-    "--preview-window=up,78%,wrap,border-bottom",
+    `--border-label= memory proposal ${input.position} of ${input.total} · ${input.skill} `,
+    "--preview-window=up,75%,wrap,border-bottom",
     "--color=16",
-    `--preview=${self} show {1} | ${preview}`,
-    `--header=${REVIEW_KEYS}`,
-    `--bind=${act("a", "apply")}`,
-    `--bind=${act("c", "comment", false)}`,
-    `--bind=${act("d", "discard")}`,
-    `--bind=${act("o", "omit")}`,
-    "--bind=n:down,p:up,q:abort,esc:abort",
+    `--preview=${show}`,
+    `--header=${header}`,
+    `--bind=${REVIEW_ACTIONS.map((action) => `${action.key}:print(${action.key})+accept`).join(",")}`,
+    "--bind=esc:print(q)+accept",
     "--bind=j:preview-down+preview-down+preview-down,k:preview-up+preview-up+preview-up",
     "--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,space:preview-page-down",
-    "--bind=zero:transform-header(echo 'No proposals left · q quits')",
   ];
 }
 
-export function previewCommand(which: Which): string {
-  return which("bat") ? 'bat --language=md --color=always --style=plain --paging=never --theme="${BAT_THEME:-ansi}"' : "cat";
+export function parseChoice(output: string): ReviewChoice {
+  const key = output.split("\n")[0]?.split("\t")[0]?.trim() ?? "";
+  return REVIEW_ACTIONS.find((action) => action.key === key)?.choice ?? "quit";
+}
+
+async function act(choice: Exclude<ReviewChoice, "skip" | "quit">, proposal: Proposal, deps: CliDeps): Promise<string> {
+  const { config } = deps;
+  if (choice === "apply") {
+    const note = loadProposalState(config.stateDir).proposals[proposal.id];
+    updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { applyingSince: deps.now().toISOString(), snoozedUntil: undefined, lastError: undefined }));
+    try {
+      deps.enqueue({
+        kind: "apply",
+        config,
+        sessionId: CLI_SESSION,
+        cwd: deps.cwd,
+        packageRoot: deps.packageRoot,
+        createdAt: deps.now().toISOString(),
+        proposals: [{ id: proposal.id, skill: proposal.skill, rule: proposal.rule, why: proposal.why, evidence: proposal.evidence, comment: note?.comment ?? "" }],
+      });
+    } catch (error) {
+      updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { applyingSince: undefined }));
+      throw error;
+    }
+    return `Queued ${proposal.skill}: the background job commits it locally and never pushes.`;
+  }
+  if (choice === "comment") {
+    const current = loadProposalState(config.stateDir).proposals[proposal.id]?.comment ?? "";
+    const edited = deps.editComment(current, proposal.skill);
+    if (edited === null) return `Kept the comment on ${proposal.skill} as it was.`;
+    updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { comment: edited.trim() || undefined }));
+    return edited.trim() === "" ? `Cleared the comment on ${proposal.skill}.` : `Saved the comment on ${proposal.skill}.`;
+  }
+  if (choice === "discard") {
+    await discardProposal(config.dir, proposal, { autoCommit: config.autoCommit, lock: { timeoutMs: DISCARD_LOCK_TIMEOUT_MS } });
+    updateProposalState(config.stateDir, (state) => {
+      delete state.proposals[proposal.id];
+    });
+    return `Discarded the ${proposal.skill} proposal.`;
+  }
+  updateProposalState(config.stateDir, (state) => snooze(state, proposal.id, deps.now()));
+  return `Omitted the ${proposal.skill} proposal for 24 hours.`;
+}
+
+export async function review(deps: CliDeps): Promise<string> {
+  const { config } = deps;
+  const proposals = readProposals(config.dir);
+  const queue = reviewQueue(proposals, loadPrunedState(config, proposals), deps.now()).map((proposal) => proposal.id);
+  if (queue.length === 0) return "No memory proposals to review.";
+  const preview = previewCommand(deps.which);
+  const counts = { apply: 0, comment: 0, discard: 0, omit: 0, skip: 0 };
+  let message = "";
+  for (let index = 0; index < queue.length; index++) {
+    const proposal = readProposals(config.dir).find((candidate) => candidate.id === queue[index]);
+    if (!proposal) continue;
+    const output = deps.runFzf(
+      cardArgs({ packageRoot: deps.packageRoot, preview, id: proposal.id, position: index + 1, total: queue.length, skill: proposal.skill, message }),
+      actionLines(),
+    );
+    const choice = parseChoice(output);
+    if (choice === "quit") break;
+    counts[choice]++;
+    if (choice === "skip") {
+      message = `Skipped the ${proposal.skill} proposal.`;
+      continue;
+    }
+    try {
+      message = await act(choice, proposal, deps);
+    } catch (error) {
+      message = `Failed to ${choice} the ${proposal.skill} proposal: ${errorMessage(error)}`;
+    }
+    if (choice === "comment") index--;
+  }
+  const done = [
+    counts.apply > 0 ? `queued ${counts.apply}` : "",
+    counts.discard > 0 ? `discarded ${counts.discard}` : "",
+    counts.omit > 0 ? `omitted ${counts.omit}` : "",
+    counts.skip > 0 ? `skipped ${counts.skip}` : "",
+  ].filter((part) => part !== "");
+  return done.length === 0 ? "No proposals changed." : `Reviewed proposals: ${done.join(", ")}.`;
 }
 
 export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {
@@ -174,66 +248,19 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
   const { config } = deps;
   try {
     if (command === "list") return { stdout: listLines(config, deps.now()).map((line) => `${line}\n`).join(""), code: 0 };
-    if (command === "header") return { stdout: `${headerText(config)}\n`, code: 0 };
     if (command === "show") {
       const proposal = findProposal(config, id);
       return { stdout: showMarkdown(proposal, loadProposalState(config.stateDir), deps), code: 0 };
     }
-    if (command === "apply") {
-      const proposal = findProposal(config, id);
-      const note = loadProposalState(config.stateDir).proposals[proposal.id];
-      updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { applyingSince: deps.now().toISOString(), snoozedUntil: undefined, lastError: undefined }));
-      try {
-        deps.enqueue({
-          kind: "apply",
-          config,
-          sessionId: CLI_SESSION,
-          cwd: deps.cwd,
-          packageRoot: deps.packageRoot,
-          createdAt: deps.now().toISOString(),
-          proposals: [{ id: proposal.id, skill: proposal.skill, rule: proposal.rule, why: proposal.why, evidence: proposal.evidence, comment: note?.comment ?? "" }],
-        });
-      } catch (error) {
-        updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { applyingSince: undefined }));
-        throw error;
-      }
-      setMessage(config, `Queued ${proposal.skill}: the background job commits it locally and never pushes.`);
-      return { stdout: "", code: 0 };
-    }
-    if (command === "comment") {
-      const proposal = findProposal(config, id);
-      const current = loadProposalState(config.stateDir).proposals[proposal.id]?.comment ?? "";
-      const edited = deps.editComment(current, proposal.skill);
-      if (edited === null) return { stdout: "", code: 0 };
-      updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { comment: edited.trim() || undefined }));
-      setMessage(config, edited.trim() === "" ? `Cleared the comment on ${proposal.skill}.` : `Saved the comment on ${proposal.skill}.`);
-      return { stdout: "", code: 0 };
-    }
-    if (command === "discard") {
-      const proposal = findProposal(config, id);
-      await discardProposal(config.dir, proposal, { autoCommit: config.autoCommit, lock: { timeoutMs: DISCARD_LOCK_TIMEOUT_MS } });
-      updateProposalState(config.stateDir, (state) => {
-        delete state.proposals[proposal.id];
-      });
-      setMessage(config, `Discarded the ${proposal.skill} proposal.`);
-      return { stdout: "", code: 0 };
-    }
-    if (command === "omit") {
-      const proposal = findProposal(config, id);
-      updateProposalState(config.stateDir, (state) => snooze(state, proposal.id, deps.now()));
-      setMessage(config, `Omitted the ${proposal.skill} proposal for 24 hours.`);
-      return { stdout: "", code: 0 };
+    if (command === "apply" || command === "comment" || command === "discard" || command === "omit") {
+      return { stdout: `${await act(command, findProposal(config, id), deps)}\n`, code: 0 };
     }
     if (command === "review" || command === undefined) {
       if (!deps.which("fzf")) return { stdout: "pi-memory review needs fzf on PATH (brew install fzf).\n", code: 1 };
-      setMessage(config, "");
-      const code = deps.runFzf(fzfArgs(deps.packageRoot, previewCommand(deps.which)), `${selfCommand(deps.packageRoot)} list`);
-      setMessage(config, "");
-      return { stdout: "", code: code === 130 || code === 1 ? 0 : code };
+      return { stdout: `${await review(deps)}\n`, code: 0 };
     }
-    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit|header] [id]\n", code: 2 };
+    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit] [id]\n", code: 2 };
   } catch (error) {
-    setMessage(config, `Failed: ${errorMessage(error)}`);
     return { stdout: `${errorMessage(error)}\n`, code: 1 };
   }
 }
@@ -264,7 +291,7 @@ export function defaultCliDeps(env: Record<string, string | undefined> = process
     which: findOnPath,
     enqueue: (job) => enqueueWriter(job, { which: findOnPath }),
     editComment: editInEditor,
-    runFzf: (args, listCommand) => spawnSync("fzf", args, { stdio: "inherit", env: { ...childEnv, FZF_DEFAULT_COMMAND: listCommand } }).status ?? 1,
+    runFzf: (args, input) => spawnSync("fzf", args, { input, stdio: ["pipe", "pipe", "inherit"], env: childEnv, encoding: "utf8" }).stdout ?? "",
   };
 }
 

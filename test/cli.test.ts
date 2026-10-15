@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fzfArgs, headerText, listLines, previewCommand, REVIEW_KEYS, runCli, type CliDeps } from "../src/cli.ts";
+import { actionLines, cardArgs, listLines, parseChoice, previewCommand, REVIEW_KEYS, runCli, type CliDeps } from "../src/cli.ts";
 import { resolveConfig } from "../src/config.ts";
 import { loadProposalState } from "../src/proposal-state.ts";
 import { readProposals } from "../src/proposals.ts";
@@ -24,7 +24,7 @@ const PROPOSALS = `## 2026-10-09 proposal:react-code
 - Session: s2
 `;
 
-function fixture(options: { fzf?: boolean; bat?: boolean; comment?: string | null } = {}) {
+function fixture(options: { fzf?: boolean; bat?: boolean; comment?: string | null; keys?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), "psm-cli-"));
   const agentDir = join(root, ".pi", "agent");
   const config = { ...resolveConfig({ memory: { dir: join(root, "memory"), stateDir: join(root, "state"), autoCommit: false } }, { env: { PI_CODING_AGENT_DIR: agentDir }, home: root }) };
@@ -35,7 +35,8 @@ function fixture(options: { fzf?: boolean; bat?: boolean; comment?: string | nul
   mkdirSync(skillDir, { recursive: true });
   writeFileSync(join(skillDir, "SKILL.md"), "---\nname: react-code\ndescription: React\n---\n\n# React code\n\n## Styling\n\nStyle.\n\n## Providers and memo\n\nProviders and useMemo on a provider value.\n");
   const jobs: QueuedJob[] = [];
-  const fzfRuns: { args: string[]; list: string }[] = [];
+  const fzfRuns: { args: string[]; input: string }[] = [];
+  const keys = [...(options.keys ?? [])];
   const deps: CliDeps = {
     config,
     now: () => new Date("2025-03-01T12:00:00.000Z"),
@@ -48,9 +49,9 @@ function fixture(options: { fzf?: boolean; bat?: boolean; comment?: string | nul
       return { runner: "detached", jobFile: "job.json" };
     },
     editComment: () => (options.comment === undefined ? "put it under Providers\n" : options.comment),
-    runFzf: (args, list) => {
-      fzfRuns.push({ args, list });
-      return 130;
+    runFzf: (args, input) => {
+      fzfRuns.push({ args, input });
+      return `${keys.shift() ?? "q"}\n`;
     },
   };
   const ids = readProposals(config.dir).map((proposal) => proposal.id);
@@ -83,7 +84,6 @@ test("comment saves the edited note, tags the row, and apply queues it with the 
   assert.equal(loadProposalState(config.stateDir).proposals[ids[0]!]!.comment, "put it under Providers");
   assert.match(listLines(config, deps.now())[0]!, /\[✎\]$/);
   assert.match((await runCli(["show", ids[0]!], deps)).stdout, /\*\*Comment\*\* put it under Providers/);
-  assert.match(headerText(config), /Saved the comment on react-code\./);
 
   await runCli(["apply", ids[0]!], deps);
   assert.equal(jobs.length, 1);
@@ -93,7 +93,6 @@ test("comment saves the edited note, tags the row, and apply queues it with the 
   ]);
   assert.equal(loadProposalState(config.stateDir).proposals[ids[0]!]!.applyingSince, "2025-03-01T12:00:00.000Z");
   assert.equal(listLines(config, deps.now()).length, 1);
-  assert.match(headerText(config), /Queued react-code/);
 });
 
 test("a cancelled editor keeps the old comment", async () => {
@@ -106,44 +105,67 @@ test("discard removes the entry and omit snoozes it, and both leave a header mes
   const { deps, config, ids } = fixture();
   await runCli(["discard", ids[1]!], deps);
   assert.deepEqual(readProposals(config.dir).map((proposal) => proposal.id), [ids[0]]);
-  assert.match(headerText(config), /Discarded the git proposal\./);
   await runCli(["omit", ids[0]!], deps);
   assert.equal(loadProposalState(config.stateDir).proposals[ids[0]!]!.snoozedUntil, "2025-03-02T12:00:00.000Z");
   assert.match(listLines(config, deps.now())[0]!, /\[omitted\]$/);
 });
 
 test("an unknown id fails with a message and a non-zero code", async () => {
-  const { deps, config } = fixture();
+  const { deps } = fixture();
   const result = await runCli(["apply", "nope"], deps);
   assert.equal(result.code, 1);
   assert.match(result.stdout, /no proposal with id nope/);
-  assert.match(headerText(config), /Failed: no proposal with id nope/);
 });
 
-test("review runs fzf with key bindings, a bat preview and the list as its source, and needs fzf", async () => {
-  const { deps, fzfRuns } = fixture({ bat: true });
-  assert.equal((await runCli(["review"], deps)).code, 0);
-  const [run] = fzfRuns;
-  assert.match(run!.list, /src\/cli\.ts list$/);
-  const args = run!.args.join("\n");
-  assert.match(args, /--preview=.*src\/cli\.ts show \{1\} \| bat --language=md/);
-  for (const [key, verb] of [["a", "apply"], ["d", "discard"], ["o", "omit"]]) {
-    assert.match(args, new RegExp(`--bind=${key}:execute-silent\\(.* ${verb} \\{1\\}\\)\\+reload\\(.* list\\)`));
-  }
-  assert.match(args, /--bind=c:execute\(.* comment \{1\}\)/);
-  assert.match(args, /--no-input/);
-  assert.equal(run!.args[0], "--with-shell=/bin/sh -c");
-  assert.match(args, /--theme="\$\{BAT_THEME:-ansi\}"/);
-  assert.match(args, /--color=16/);
-  assert.match(args, /--bind=j:preview-down\+preview-down\+preview-down,k:preview-up\+preview-up\+preview-up/);
-  assert.match(args, /--bind=n:down,p:up,q:abort/);
-  assert.ok(run!.args.includes(`--header=${REVIEW_KEYS}`));
-  assert.equal(previewCommand(() => null), "cat");
+test("review shows one proposal at a time and moves on after each decision", async () => {
+  const { deps, config, jobs, fzfRuns, ids } = fixture({ bat: true, keys: ["c", "a", "s"] });
+  const result = await runCli(["review"], deps);
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, "Reviewed proposals: queued 1, skipped 1.\n");
+  assert.equal(fzfRuns.length, 3);
+  const [first, again, second] = fzfRuns.map((run) => run.args.join("\n"));
+  assert.match(first!, /--border-label= memory proposal 1 of 2 · react-code /);
+  assert.match(first!, new RegExp(`--preview=.*src/cli\\.ts show ${ids[0]} \\| bat --language=md`));
+  assert.match(again!, /memory proposal 1 of 2 · react-code[\s\S]*Saved the comment on react-code\./);
+  assert.match(second!, /memory proposal 2 of 2 · git[\s\S]*Queued react-code/);
+  assert.equal((jobs[0] as { proposals: { comment: string }[] }).proposals[0]!.comment, "put it under Providers");
+  assert.equal(readProposals(config.dir).length, 2);
+  assert.equal(fzfRuns[0]!.input, actionLines());
+});
 
+test("quitting stops the review, omitted proposals are not shown again in the same run, and an empty queue says so", async () => {
+  const quit = fixture({ keys: ["q"] });
+  assert.equal((await runCli(["review"], quit.deps)).stdout, "No proposals changed.\n");
+  assert.equal(quit.fzfRuns.length, 1);
+
+  const omit = fixture({ keys: ["o", "o"] });
+  assert.equal((await runCli(["review"], omit.deps)).stdout, "Reviewed proposals: omitted 2.\n");
+  assert.equal(omit.fzfRuns.length, 2);
+  const after = fixture({ keys: ["d", "d"] });
+  await runCli(["review"], after.deps);
+  assert.equal((await runCli(["review"], after.deps)).stdout, "No memory proposals to review.\n");
+});
+
+test("the card binds a single key per action, scrolls the preview with j/k, and runs under /bin/sh", () => {
+  const args = cardArgs({ packageRoot: "/pkg", preview: "cat", id: "abc", position: 2, total: 5, skill: "git", message: "" });
+  const joined = args.join("\n");
+  assert.equal(args[0], "--with-shell=/bin/sh -c");
+  assert.match(joined, /--bind=a:print\(a\)\+accept,c:print\(c\)\+accept,d:print\(d\)\+accept,o:print\(o\)\+accept,s:print\(s\)\+accept,q:print\(q\)\+accept/);
+  assert.match(joined, /--bind=j:preview-down\+preview-down\+preview-down,k:preview-up\+preview-up\+preview-up/);
+  assert.match(joined, /--preview-window=up,75%/);
+  assert.ok(args.includes(`--header=${REVIEW_KEYS}`));
+  assert.equal(parseChoice("d\n"), "discard");
+  assert.equal(parseChoice("c\tc  Comment\n"), "comment");
+  assert.equal(parseChoice(""), "quit");
+  assert.match(actionLines(), /^a\ta  Apply/);
+  assert.match(previewCommand(() => "/bin/bat"), /--theme="\$\{BAT_THEME:-ansi\}"/);
+  assert.equal(previewCommand(() => null), "cat");
+});
+
+test("review needs fzf", async () => {
   const missing = fixture({ fzf: false });
   const result = await runCli(["review"], missing.deps);
   assert.equal(result.code, 1);
   assert.match(result.stdout, /needs fzf/);
   assert.equal(missing.fzfRuns.length, 0);
-  assert.ok(fzfArgs("/pkg", "cat").some((arg) => arg.startsWith("--preview-window=up")));
 });
