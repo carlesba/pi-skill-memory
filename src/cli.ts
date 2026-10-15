@@ -17,7 +17,7 @@ export const CONFIG_ENV = "PI_SKILL_MEMORY_CONFIG";
 export const MESSAGE_FILE = "review-message.txt";
 export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
 export const CLI_SESSION = "pi-memory-review";
-export const REVIEW_KEYS = "a apply · c comment · d discard · o omit · j/k move · ctrl-j/k, ctrl-d/u or wheel scroll preview · q quit";
+export const REVIEW_KEYS = "a apply · c comment · d discard · o omit · n/p move · j/k, ctrl-d/u or wheel scroll preview · q quit";
 
 export interface CliDeps {
   config: MemoryConfig;
@@ -158,8 +158,8 @@ export function fzfArgs(packageRoot: string, preview: string): string[] {
     `--bind=${act("c", "comment", false)}`,
     `--bind=${act("d", "discard")}`,
     `--bind=${act("o", "omit")}`,
-    "--bind=j:down,k:up,q:abort,esc:abort",
-    "--bind=ctrl-j:preview-down+preview-down+preview-down,ctrl-k:preview-up+preview-up+preview-up",
+    "--bind=n:down,p:up,q:abort,esc:abort",
+    "--bind=j:preview-down+preview-down+preview-down,k:preview-up+preview-up+preview-up",
     "--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,space:preview-page-down",
     "--bind=zero:transform-header(echo 'No proposals left · q quits')",
   ];

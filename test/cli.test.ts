@@ -135,7 +135,8 @@ test("review runs fzf with key bindings, a bat preview and the list as its sourc
   assert.equal(run!.args[0], "--with-shell=/bin/sh -c");
   assert.match(args, /--theme="\$\{BAT_THEME:-ansi\}"/);
   assert.match(args, /--color=16/);
-  assert.match(args, /--bind=ctrl-j:preview-down\+preview-down\+preview-down,ctrl-k:preview-up\+preview-up\+preview-up/);
+  assert.match(args, /--bind=j:preview-down\+preview-down\+preview-down,k:preview-up\+preview-up\+preview-up/);
+  assert.match(args, /--bind=n:down,p:up,q:abort/);
   assert.ok(run!.args.includes(`--header=${REVIEW_KEYS}`));
   assert.equal(previewCommand(() => null), "cat");
 
