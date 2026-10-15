@@ -62,8 +62,8 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   const notes: { text: string; level: string }[] = [];
   const widgets = new Map<string, string[] | undefined>();
   const entryRenderers = new Map<string, unknown>();
-  const script = { selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
-  const shown = { selects: [] as string[], editors: [] as (string | undefined)[] };
+  const script = { keys: [] as string[], selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
+  const shown = { bars: [] as string[], selects: [] as string[], editors: [] as (string | undefined)[] };
   const session = {
     id: "sess-1",
     file: join(fixture.root, "session.jsonl") as string | undefined,
@@ -95,6 +95,19 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     ui: {
       notify: (text: string, level = "info") => notes.push({ text, level }),
       setWidget: (key: string, content: string[] | undefined) => widgets.set(key, content),
+      custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown) => {
+        const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+        let finished: unknown = "stop";
+        let closed = false;
+        const component = factory({ requestRender: () => undefined }, theme, {}, (result) => {
+          finished = result;
+          closed = true;
+        }) as { render: (width: number) => string[]; handleInput: (data: string) => void };
+        shown.bars.push(component.render(120).join("\n"));
+        const key = script.keys.shift();
+        if (key !== undefined) component.handleInput(key);
+        return closed ? finished : "stop";
+      },
       select: async (title: string, options: string[]) => {
         shown.selects.push(title);
         const choice = script.selects.shift();
@@ -569,7 +582,7 @@ test("startup in the TUI shows a proposal count widget, never a dialog, and skip
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
-  assert.equal(h.shown.selects.length + h.session.branch.length, 0);
+  assert.equal(h.shown.bars.length + h.shown.selects.length + h.session.branch.length, 0);
 
   for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
     const other = harness(fixture);
@@ -604,7 +617,7 @@ test("/memory proposals shows each proposal in the transcript and queues one app
   const h = harness(fixture);
   await h.fire("session_start", { reason: "startup" });
   const [memo, hook, rebase] = readProposals(fixture.dir);
-  h.script.selects.push("Comment…", "Apply", "Omit", "Discard");
+  h.script.keys.push("c", "a", "o", "d");
   h.script.editors.push("put it under Context");
   const note = await h.command("proposals");
 
@@ -615,8 +628,9 @@ test("/memory proposals shows each proposal in the transcript and queues one app
   assert.match(first, /Do not wrap a provider value in useMemo/);
   assert.match(first, /Providers live next to the feature/);
   assert.match(first, /~\/\.pi\/agent\/skills\/react-code\/SKILL\.md:\d+/);
-  assert.equal(h.shown.selects.length, 4);
-  assert.match(h.shown.selects[1]!, /Proposal 1\/3 for react-code · comment: put it under Context/);
+  assert.equal(h.shown.bars.length, 4);
+  assert.match(h.shown.bars[0]!, /\[a\] Apply.*\[c\] Comment….*\[d\] Discard.*\[o\] Omit.*\[s\] Stop reviewing/);
+  assert.match(h.shown.bars[1]!, /Proposal 1\/3 for react-code · comment: put it under Context/);
 
   assert.equal(h.applyJobs.length, 1);
   assert.deepEqual(h.applyJobs[0]!.proposals, [
@@ -632,12 +646,12 @@ test("/memory proposals shows each proposal in the transcript and queues one app
   assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
 });
 
-test("dismissing the action dialog stops the review and leaves the remaining proposals untouched", async () => {
+test("s stops the review and leaves the remaining proposals untouched", async () => {
   const fixture = proposalFixture();
   const h = harness(fixture);
-  h.script.selects.push("Omit", undefined);
+  h.script.keys.push("o", "s");
   await h.command("proposals");
-  assert.equal(h.shown.selects.length, 2);
+  assert.equal(h.shown.bars.length, 2);
   assert.equal(h.applyJobs.length, 0);
   assert.equal(readProposals(fixture.dir).length, 3);
   assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);

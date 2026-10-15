@@ -12,6 +12,7 @@ import {
   type CardInput,
 } from "../src/review-card.ts";
 import { transcriptReviewUI } from "../src/review.ts";
+import type { ActionBar } from "../src/review-card.ts";
 
 const PROPOSAL: Proposal = {
   id: "abc1234567",
@@ -77,30 +78,41 @@ test("hard-wrapped skill paragraphs are joined so the entry rewraps them, leavin
   assert.equal(unwrapParagraphs(source), "# Title\n\nfirst half second half\n\n- item one continued\n- item two\n\n```\ncode a\ncode b\n```\n");
 });
 
-function fakeUi(choices: (string | undefined)[], comments: (string | undefined)[] = []) {
-  const titles: string[] = [];
+function fakeUi(keys: string[], comments: (string | undefined)[] = []) {
+  const bars: string[] = [];
+  const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
   const ui = {
-    select: async (title: string, options: string[]) => {
-      titles.push(title);
-      const choice = choices.shift();
-      return choice === undefined ? undefined : options.find((option) => option.startsWith(choice));
+    custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => ActionBar) => {
+      let result: unknown;
+      const bar = factory({ requestRender: () => undefined }, theme, {}, (value) => (result = value));
+      for (const key of keys.shift() ?? "") {
+        bars.push(bar.render(120).join("\n"));
+        bar.handleInput(key === "E" ? "\r" : key === "X" ? "\x1b" : key);
+        if (result !== undefined) break;
+      }
+      return result;
     },
     editor: async () => comments.shift(),
   };
-  return { ctx: { ui } as never, titles };
+  return { ctx: { ui } as never, bars };
 }
 
-test("the transcript review appends the proposal once, then asks for an action in a dialog", async () => {
+test("the transcript review appends the proposal once, then takes single-key actions", async () => {
   const entries: unknown[] = [];
-  const { ctx, titles } = fakeUi(["Comment", "Apply"], ["only the first sentence"]);
+  const { ctx, bars } = fakeUi(["c", "a"], ["only the first sentence"]);
   const review = transcriptReviewUI(ctx, (_type, data) => entries.push(data));
   assert.deepEqual(await review.card(input()), { action: "comment", comment: "only the first sentence" });
   assert.deepEqual(await review.card(input({ comment: "only the first sentence" })), { action: "apply" });
   assert.equal(entries.length, 1);
-  assert.match(titles[1]!, /Proposal 2\/9 for react-code · comment: only the first sentence/);
+  assert.match(bars[1]!, /Proposal 2\/9 for react-code · comment: only the first sentence/);
+  assert.match(bars[0]!, /› \[a\] Apply {3}\[c\] Comment… {3}\[d\] Discard {3}\[o\] Omit {3}\[s\] Stop reviewing/);
 });
 
-test("dismissing the action dialog stops reviewing", async () => {
-  const { ctx } = fakeUi([undefined]);
-  assert.deepEqual(await transcriptReviewUI(ctx, () => undefined).card(input()), { action: "stop" });
+test("s and Esc stop, d and o act, and h/l with Enter pick the highlighted action", async () => {
+  const { ctx, bars } = fakeUi(["s", "X", "d", "o", "llE", "lhhE"]);
+  const review = transcriptReviewUI(ctx, () => undefined);
+  const results = [];
+  for (let index = 0; index < 6; index++) results.push(await review.card(input()));
+  assert.deepEqual(results.map((result) => result.action), ["stop", "stop", "discard", "omit", "discard", "stop"]);
+  assert.ok(bars.some((bar) => /› \[d\] Discard/.test(bar)));
 });

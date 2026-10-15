@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, type Component, type MarkdownTheme } from "@earendil-works/pi-tui";
+import { Box, Key, Markdown, matchesKey, truncateToWidth, type Component, type Focusable, type MarkdownTheme } from "@earendil-works/pi-tui";
 import { splitFrontmatter } from "./frontmatter.ts";
 import type { Proposal } from "./proposals.ts";
 
@@ -171,7 +171,55 @@ export function proposalEntryMarkdown(data: ProposalEntryData, expanded: boolean
 }
 
 export function proposalEntryComponent(data: ProposalEntryData, expanded: boolean, theme: Theme): Component {
-  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  box.addChild(new Markdown(proposalEntryMarkdown(data, expanded), 0, 0, markdownTheme(theme)));
+  const box = new Box(1, 0);
+  box.addChild(new Markdown(`---\n\n${proposalEntryMarkdown(data, expanded)}`, 0, 0, markdownTheme(theme)));
   return box;
+}
+
+export type BarChoice = "apply" | "comment" | "discard" | "omit" | "stop";
+
+export const BAR_ACTIONS: { key: string; value: BarChoice; label: string }[] = [
+  ...CARD_ACTIONS.map(({ key, value, label }) => ({ key, value, label })),
+  { key: "s", value: "stop", label: "Stop reviewing" },
+];
+
+export class ActionBar implements Component, Focusable {
+  focused = false;
+  private selected = 0;
+  private readonly title: string;
+  private readonly theme: Theme;
+  private readonly requestRender: () => void;
+  private readonly done: (choice: BarChoice) => void;
+
+  constructor(title: string, theme: Theme, requestRender: () => void, done: (choice: BarChoice) => void) {
+    this.title = title;
+    this.theme = theme;
+    this.requestRender = requestRender;
+    this.done = done;
+  }
+
+  handleInput(data: string): void {
+    const shortcut = BAR_ACTIONS.find((action) => data === action.key);
+    if (shortcut) return this.done(shortcut.value);
+    if (matchesKey(data, Key.escape)) return this.done("stop");
+    if (matchesKey(data, Key.enter)) return this.done(BAR_ACTIONS[this.selected]!.value);
+    const step = data === "l" || matchesKey(data, Key.right) || matchesKey(data, Key.tab) ? 1 : data === "h" || matchesKey(data, Key.left) ? -1 : 0;
+    if (step === 0) return;
+    this.selected = (this.selected + step + BAR_ACTIONS.length) % BAR_ACTIONS.length;
+    this.requestRender();
+  }
+
+  invalidate(): void {}
+
+  render(width: number): string[] {
+    const bar = BAR_ACTIONS.map((action, index) => {
+      const label = `[${action.key}] ${action.label}`;
+      return index === this.selected ? this.theme.fg("accent", this.theme.bold(`› ${label}`)) : this.theme.fg("muted", `  ${label}`);
+    }).join(" ");
+    return [
+      truncateToWidth(` ${this.theme.fg("accent", this.title)}`, width),
+      truncateToWidth(bar, width),
+      truncateToWidth(this.theme.fg("dim", "  a/c/d/o/s or h/l and Enter · Esc stops · scroll up to read the card"), width),
+    ];
+  }
 }
