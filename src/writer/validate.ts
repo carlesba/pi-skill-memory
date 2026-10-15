@@ -1,3 +1,4 @@
+import { parseFrontmatter } from "../frontmatter.ts";
 import { MEMORY_VOTE_KINDS, type MemoryVoteKind } from "../ledger.ts";
 import { parseMemories, parseScope, slugify, type Memory, type Scope } from "../topics.ts";
 import {
@@ -228,4 +229,43 @@ export function validateUserMerge(value: unknown, context: MarkedBodyContext): V
     checkBodyShape(body, Number.MAX_SAFE_INTEGER);
     return parseMarkedBody(body, value.removed, context);
   });
+}
+
+export interface ApplyContext {
+  name: string;
+  original: string;
+  addedChars: number;
+}
+
+export interface ApplyResult {
+  body: string;
+  summary: string;
+}
+
+export const APPLY_GROWTH_SLACK_CHARS = 1500;
+export const APPLY_MIN_KEPT_RATIO = 0.6;
+
+export function maxAppliedChars(original: string, addedChars: number): number {
+  return original.length + 2 * addedChars + APPLY_GROWTH_SLACK_CHARS;
+}
+
+export function validateApply(data: unknown, context: ApplyContext): Validated<ApplyResult> {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return { ok: false, error: "answer is not a JSON object" };
+  const record = data as Record<string, unknown>;
+  if (typeof record.body !== "string" || record.body.trim() === "") return { ok: false, error: "body is missing or empty" };
+  const body = `${record.body.replace(/\r\n/g, "\n").replace(/\s+$/, "")}\n`;
+  const summary = typeof record.summary === "string" ? record.summary.trim() : "";
+  const parsed = parseFrontmatter(body);
+  if (!parsed) return { ok: false, error: "frontmatter does not parse" };
+  if ((parsed.fields.name ?? "").trim() !== context.name) {
+    return { ok: false, error: `frontmatter name changed from ${context.name} to ${parsed.fields.name ?? "(none)"}` };
+  }
+  if (parsed.body.trim() === "") return { ok: false, error: "skill body is empty" };
+  const limit = maxAppliedChars(context.original, context.addedChars);
+  if (body.length > limit) return { ok: false, error: `body grew to ${body.length} chars, more than ${limit}` };
+  if (body.length < context.original.length * APPLY_MIN_KEPT_RATIO) {
+    return { ok: false, error: `body shrank to ${body.length} chars from ${context.original.length}` };
+  }
+  if (body === `${context.original.replace(/\r\n/g, "\n").replace(/\s+$/, "")}\n`) return { ok: false, error: "body is unchanged" };
+  return { ok: true, body, summary };
 }

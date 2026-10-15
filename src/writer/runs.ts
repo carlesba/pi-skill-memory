@@ -3,13 +3,17 @@ import { join } from "node:path";
 
 export type RunOutcomeKind = "ok" | "skipped" | "failed" | "nothing";
 
+export type RunKind = "write" | "apply";
+
 export interface RunRecord {
+  kind?: RunKind;
   ts: string;
   session: string;
   outcome: RunOutcomeKind;
   topics: string[];
   error?: string;
   rejected?: string[];
+  summary?: string;
 }
 
 export const RUNS_LOG = "runs.jsonl";
@@ -28,7 +32,7 @@ export function appendRun(stateDir: string, record: RunRecord): void {
   appendFileSync(runsLogPath(stateDir), `${JSON.stringify(record)}\n`);
 }
 
-export function readLastRun(stateDir: string): RunRecord | null {
+export function readLastRun(stateDir: string, kind: RunKind = "write"): RunRecord | null {
   let raw: string;
   try {
     raw = readFileSync(runsLogPath(stateDir), "utf8");
@@ -39,7 +43,8 @@ export function readLastRun(stateDir: string): RunRecord | null {
   for (let index = lines.length - 1; index >= 0; index--) {
     try {
       const value = JSON.parse(lines[index]!) as RunRecord;
-      if (typeof value.outcome === "string" && typeof value.ts === "string") return value;
+      if (typeof value.outcome !== "string" || typeof value.ts !== "string") continue;
+      if ((value.kind ?? "write") === kind) return value;
     } catch {
       continue;
     }

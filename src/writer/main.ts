@@ -1,7 +1,8 @@
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadJob } from "./job.ts";
+import { runApply } from "./apply.ts";
+import { loadJob, type ApplyJob } from "./job.ts";
 import { withLock, type LockOptions } from "./lock.ts";
 import { createPiRunner, type ModelRunner } from "./model.ts";
 import { runPipeline, type PipelineDeps } from "./pipeline.ts";
@@ -16,6 +17,28 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function runApplyJob(job: ApplyJob, deps: RunJobDeps, log: (line: string) => void, model: ModelRunner): Promise<RunRecord> {
+  log(`proposal apply started for ${job.proposals.length} proposals`);
+  let record: RunRecord;
+  try {
+    const result = await runApply(job, { model, git: deps.git, log, home: deps.home, lock: deps.lock });
+    const reasons = result.skills.flatMap((outcome) => (outcome.status === "applied" ? [] : [`${outcome.skill}: ${outcome.reason}`]));
+    record = {
+      kind: "apply",
+      ts: new Date().toISOString(),
+      session: job.sessionId,
+      outcome: result.outcome,
+      topics: result.skills.filter((outcome) => outcome.status === "applied").map((outcome) => outcome.skill),
+      summary: result.summary,
+    };
+    if (reasons.length > 0) record.error = reasons.join("; ");
+  } catch (error) {
+    record = { kind: "apply", ts: new Date().toISOString(), session: job.sessionId, outcome: "failed", topics: [], error: errorMessage(error) };
+  }
+  log(`proposal apply finished: ${record.outcome}${record.summary ? ` (${record.summary})` : ""}`);
+  return record;
+}
+
 export async function runJob(jobFile: string, deps: RunJobDeps = {}): Promise<RunRecord> {
   const job = loadJob(jobFile);
   const stateDir = job.config.stateDir;
@@ -23,6 +46,12 @@ export async function runJob(jobFile: string, deps: RunJobDeps = {}): Promise<Ru
   const log = deps.log ?? ((line: string) => appendWriterLog(stateDir, `[${session}] ${line}`));
   mkdirSync(stateDir, { recursive: true });
   const model = deps.model ?? createPiRunner({ model: job.config.writerModel, extensions: job.config.writerExtensions, cwd: stateDir });
+  if (job.kind === "apply") {
+    const record = await runApplyJob(job, deps, log, model);
+    appendRun(stateDir, record);
+    if (record.outcome !== "failed") rmSync(jobFile, { force: true });
+    return record;
+  }
   log(`writer started for ${job.sessionFile}`);
   let record: RunRecord;
   try {

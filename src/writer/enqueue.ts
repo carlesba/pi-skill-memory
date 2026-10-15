@@ -2,7 +2,7 @@ import { spawn as nodeSpawn, spawnSync } from "node:child_process";
 import { accessSync, closeSync, constants, existsSync, mkdirSync, openSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { RunnerKind } from "../config.ts";
-import { writeJob, type WriterJob } from "./job.ts";
+import { writeJob, type QueuedJob } from "./job.ts";
 import type { SpawnFunction } from "./model.ts";
 import { PACKAGE_ROOT } from "./prompts.ts";
 import { appendWriterLog, writerLogPath } from "./runs.ts";
@@ -110,7 +110,11 @@ export function launchPueue(command: string[], group: string, stateDir: string, 
   checked(exec("pueue", ["add", "-g", group, "--", shellCommand]), "pueue add");
 }
 
-export function enqueueWriter(job: WriterJob, deps: EnqueueDeps = {}): EnqueueResult {
+function jobLabel(job: QueuedJob): string {
+  return job.kind === "apply" ? `proposal apply for ${job.sessionId}` : `writer for ${job.sessionId}`;
+}
+
+export function enqueueWriter(job: QueuedJob, deps: EnqueueDeps = {}): EnqueueResult {
   const stateDir = job.config.stateDir;
   const log = deps.log ?? ((line: string) => appendWriterLog(stateDir, line));
   const jobFile = writeJob(job);
@@ -122,7 +126,7 @@ export function enqueueWriter(job: WriterJob, deps: EnqueueDeps = {}): EnqueueRe
     } else {
       try {
         launchPueue(command, job.config.pueueGroup, stateDir, deps.exec ?? execCommand);
-        log(`queued writer for ${job.sessionId} in pueue group ${job.config.pueueGroup}`);
+        log(`queued ${jobLabel(job)} in pueue group ${job.config.pueueGroup}`);
         return { jobFile, runner: "pueue" };
       } catch (error) {
         log(`pueue failed (${(error as Error).message}); falling back to detached`);
@@ -130,6 +134,6 @@ export function enqueueWriter(job: WriterJob, deps: EnqueueDeps = {}): EnqueueRe
     }
   }
   launchDetached(command, stateDir, deps.spawn ?? nodeSpawn);
-  log(`started detached writer for ${job.sessionId}`);
+  log(`started detached ${jobLabel(job)}`);
   return { jobFile, runner: "detached" };
 }

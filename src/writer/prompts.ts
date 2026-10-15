@@ -18,7 +18,7 @@ import {
 } from "./limits.ts";
 import { truncateText, type SessionTurn } from "./session.ts";
 
-export type PromptName = "extract" | "merge" | "merge-user";
+export type PromptName = "extract" | "merge" | "merge-user" | "apply-proposal";
 
 export const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -226,5 +226,37 @@ export function buildUserMergePrompt(input: UserMergeInput, template: string = l
     maxUserChars: input.maxUserChars,
     memories: renderMergeMemories(input.memories),
     candidates: renderCandidates(input.candidates),
+  });
+}
+
+export interface ApplyPromptProposal {
+  rule: string;
+  why: string;
+  evidence: string;
+  comment: string;
+}
+
+export interface ApplyPromptInput {
+  skillName: string;
+  skill: string;
+  proposals: ApplyPromptProposal[];
+}
+
+function renderApplyProposals(proposals: ApplyPromptProposal[]): string {
+  return proposals
+    .map((proposal, index) => {
+      const lines = [`### Proposal ${index + 1}`, "", `- Rule: ${proposal.rule}`, `- Why: ${proposal.why}`];
+      if (proposal.evidence !== "") lines.push(`- The user said: "${proposal.evidence}"`);
+      lines.push(`- Comment: ${proposal.comment.trim() === "" ? "(none)" : proposal.comment.trim()}`);
+      return lines.join("\n");
+    })
+    .join("\n\n");
+}
+
+export function buildApplyPrompt(input: ApplyPromptInput, template: string = loadPrompt("apply-proposal")): string {
+  return fillTemplate(template, {
+    skillName: input.skillName,
+    skill: input.skill.replace(/\n+$/, ""),
+    proposals: renderApplyProposals(input.proposals),
   });
 }
