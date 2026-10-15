@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { relative } from "node:path";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type {
@@ -29,12 +30,27 @@ import {
 } from "./human.ts";
 import { extractToolPaths } from "./paths.ts";
 import { knownRepoIdentities, promptNamedRepos, reminderLine, reminderTopics } from "./reminders.ts";
+import { pendingProposals, updateProposalState } from "./proposal-state.ts";
+import { discardProposal, readProposals } from "./proposals.ts";
 import { createRepoResolver, type RepoResolver } from "./repo.ts";
+import {
+  applyNotice,
+  describeReview,
+  dialogReviewUI,
+  formatProposalList,
+  loadPrunedState,
+  overlayReviewUI,
+  PROPOSALS_WIDGET,
+  proposalWidgetLine,
+  reviewProposals,
+  type SkillSource,
+} from "./review.ts";
+import { readSkillIndex, skillIndexRoots } from "./skill-index.ts";
 import { listTopics, topicsForRepo, type TopicSummary } from "./topics.ts";
 import { appendUsageEvent } from "./usage.ts";
 import { isInside } from "./writer/confine.ts";
 import { enqueueWriter, findOnPath, type EnqueueResult, type Which } from "./writer/enqueue.ts";
-import type { WriterJob } from "./writer/job.ts";
+import type { ApplyProposal, QueuedJob, WriterJob } from "./writer/job.ts";
 import { PACKAGE_ROOT } from "./writer/prompts.ts";
 import { appendWriterLog, readLastRun } from "./writer/runs.ts";
 import { memoryTopicOfPath } from "./writer/session.ts";
@@ -43,11 +59,12 @@ export const USER_MEMORY_SECTION = "user_memory";
 export const USER_MEMORY_HEADING = "What this user wants from agents in every repository (pi-skill-memory user.md):";
 export const REMINDER_MESSAGE_TYPE = "pi-skill-memory-reminder";
 export const COMMAND_NAME = "memory";
-export const SUBCOMMANDS = ["status", "explain", "write"] as const;
+export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
+export const SUBCOMMANDS = ["status", "explain", "write", "proposals"] as const;
 
 export interface ExtensionDeps {
   resolver: RepoResolver;
-  enqueue: (job: WriterJob) => EnqueueResult;
+  enqueue: (job: QueuedJob) => EnqueueResult;
   now: () => Date;
   env: Record<string, string | undefined>;
   home: string;
@@ -66,6 +83,7 @@ interface SessionState {
   loaded: Set<string>;
   manualWriteLeaf: string | null | undefined;
   pendingInputs: PendingInput[];
+  widgetNoticeOnly: boolean;
 }
 
 type SessionView = Pick<ExtensionContext, "cwd" | "sessionManager">;
@@ -116,6 +134,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         loaded: new Set(),
         manualWriteLeaf: undefined,
         pendingInputs: [],
+        widgetNoticeOnly: false,
       };
       return state;
     }
@@ -159,9 +178,22 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       };
     }
 
-    pi.on("session_start", (_event, ctx) => {
+    function showProposalWidget(session: SessionState, ctx: Pick<ExtensionContext, "ui">, withNotice: boolean): void {
+      const proposals = readProposals(session.config.dir);
+      const proposalState = loadPrunedState(session.config, proposals);
+      const pending = pendingProposals(proposals, proposalState, deps.now()).length;
+      const lastApply = readLastRun(session.config.stateDir, "apply");
+      const notice = withNotice ? applyNotice(lastApply, proposalState) : null;
+      const line = proposalWidgetLine(pending, notice);
+      ctx.ui.setWidget(PROPOSALS_WIDGET, line === null ? undefined : [line]);
+      session.widgetNoticeOnly = line !== null && pending === 0;
+      if (notice && lastApply) updateProposalState(session.config.stateDir, (current) => (current.applyNoticeShown = lastApply.ts));
+    }
+
+    pi.on("session_start", (event, ctx) => {
       try {
-        startSession(ctx);
+        const session = startSession(ctx);
+        if (event.reason === "startup" && ctx.mode === "tui") showProposalWidget(session, ctx, true);
       } catch (error) {
         logFailure("session_start", error);
       }
@@ -230,9 +262,14 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       }
     });
 
-    pi.on("input", (event: InputEvent, ctx: ModeView) => {
+    pi.on("input", (event: InputEvent, ctx: ModeView & Pick<ExtensionContext, "ui">) => {
       try {
-        rememberInput(current(ctx).pendingInputs, {
+        const session = current(ctx);
+        if (session.widgetNoticeOnly) {
+          session.widgetNoticeOnly = false;
+          ctx.ui.setWidget(PROPOSALS_WIDGET, undefined);
+        }
+        rememberInput(session.pendingInputs, {
           text: event.text,
           source: event.source,
           mode: ctx.mode,
@@ -317,9 +354,65 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         topics,
         userMemoryChars: readUserMemory(session.config.dir)?.length ?? 0,
         lastRun: readLastRun(session.config.stateDir),
+        lastApply: readLastRun(session.config.stateDir, "apply"),
         pueuePath: deps.which("pueue"),
       });
       notify(ctx, text);
+    }
+
+    function skillSource(session: SessionState, ctx: ExtensionCommandContext): (skill: string) => SkillSource | null {
+      const index = readSkillIndex(skillIndexRoots({ agentDir: session.config.agentDir, home: deps.home, cwd: ctx.cwd }), session.config.dir);
+      return (skill) => {
+        const entry = index.find((candidate) => candidate.name === skill);
+        if (!entry) return null;
+        try {
+          return { path: entry.path, text: readFileSync(entry.path, "utf8") };
+        } catch {
+          return null;
+        }
+      };
+    }
+
+    function displayPath(path: string): string {
+      const fromHome = relative(deps.home, path);
+      return fromHome.startsWith("..") ? path : `~/${fromHome}`;
+    }
+
+    async function runProposals(session: SessionState, ctx: ExtensionCommandContext): Promise<void> {
+      const config = session.config;
+      if (!ctx.hasUI) {
+        const proposals = readProposals(config.dir);
+        notify(ctx, formatProposalList(pendingProposals(proposals, loadPrunedState(config, proposals), deps.now())));
+        return;
+      }
+      const lookup = skillSource(session, ctx);
+      const outcome = await reviewProposals(ctx.mode === "tui" ? overlayReviewUI(ctx) : dialogReviewUI(ctx), {
+        config,
+        now: deps.now,
+        skillFor: (skill) => {
+          const source = lookup(skill);
+          return source ? { ...source, path: displayPath(source.path) } : null;
+        },
+        discard: async (proposal) => {
+          await discardProposal(config.dir, proposal, { autoCommit: config.autoCommit, lock: { timeoutMs: DISCARD_LOCK_TIMEOUT_MS } });
+        },
+        enqueueApply: (proposals: ApplyProposal[]) => {
+          const result = deps.enqueue({
+            kind: "apply",
+            config,
+            sessionId: session.sessionId,
+            cwd: ctx.cwd,
+            packageRoot: deps.packageRoot,
+            createdAt: deps.now().toISOString(),
+            proposals,
+          });
+          return `${result.runner} runner, job ${result.jobFile}`;
+        },
+      });
+      const proposals = readProposals(config.dir);
+      const remaining = pendingProposals(proposals, loadPrunedState(config, proposals), deps.now()).length;
+      showProposalWidget(session, ctx, false);
+      notify(ctx, describeReview(outcome, remaining), outcome.errors.length > 0 ? "warning" : "info");
     }
 
     function runWrite(session: SessionState, ctx: ExtensionCommandContext): void {
@@ -334,7 +427,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     }
 
     pi.registerCommand(COMMAND_NAME, {
-      description: "Memory skills: status, explain, write",
+      description: "Memory skills: status, explain, write, proposals",
       getArgumentCompletions: (prefix) => {
         const items = SUBCOMMANDS.filter((name) => name.startsWith(prefix.trim())).map((name) => ({ value: name, label: name }));
         return items.length > 0 ? items : null;
@@ -346,7 +439,14 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
           if (subcommand === "status") runStatus(session, ctx);
           else if (subcommand === "explain") notify(ctx, formatExplain(listed, session.reminders));
           else if (subcommand === "write") runWrite(session, ctx);
-          else notify(ctx, `Unknown subcommand "${subcommand}". Use /memory status, /memory explain or /memory write.`, "warning");
+          else if (subcommand === "proposals") await runProposals(session, ctx);
+          else {
+            notify(
+              ctx,
+              `Unknown subcommand "${subcommand}". Use /memory status, /memory explain, /memory write or /memory proposals.`,
+              "warning",
+            );
+          }
         } catch (error) {
           logFailure(`/memory ${subcommand}`, error);
           notify(ctx, `/memory ${subcommand} failed: ${errorMessage(error)}`, "error");

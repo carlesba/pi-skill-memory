@@ -5,10 +5,13 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { countHumanMessages } from "../src/human.ts";
+import { loadProposalState, snooze, updateProposalState } from "../src/proposal-state.ts";
+import { readProposals } from "../src/proposals.ts";
+import { PROPOSALS_WIDGET } from "../src/review.ts";
 import extension, { createExtension, USER_MEMORY_SECTION, type ExtensionDeps } from "../src/index.ts";
 import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
-import type { WriterJob } from "../src/writer/job.ts";
+import type { ApplyJob, WriterJob } from "../src/writer/job.ts";
 import { appendRun } from "../src/writer/runs.ts";
 import { fakeResolver } from "./writer-helpers.ts";
 
@@ -54,7 +57,11 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
   const jobs: WriterJob[] = [];
+  const applyJobs: ApplyJob[] = [];
   const notes: { text: string; level: string }[] = [];
+  const widgets = new Map<string, string[] | undefined>();
+  const script = { cards: [] as unknown[], selects: [] as (string | undefined)[], editors: [] as (string | undefined)[] };
+  const shown = { cards: [] as unknown[], selects: [] as string[], editors: [] as (string | undefined)[] };
   const session = {
     id: "sess-1",
     file: join(fixture.root, "session.jsonl") as string | undefined,
@@ -80,7 +87,26 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
     cwd,
     mode,
     hasUI: true,
-    ui: { notify: (text: string, level = "info") => notes.push({ text, level }) },
+    ui: {
+      notify: (text: string, level = "info") => notes.push({ text, level }),
+      setWidget: (key: string, content: string[] | undefined) => widgets.set(key, content),
+      custom: async (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown, options: unknown) => {
+        const tui = { terminal: { rows: 40, columns: 120 }, requestRender: () => undefined };
+        const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text, italic: (text: string) => text, underline: (text: string) => text, strikethrough: (text: string) => text };
+        let finished: unknown;
+        const component = factory(tui, theme, {}, (result) => (finished = result)) as { render: (width: number) => string[] };
+        shown.cards.push({ lines: component.render(120), options });
+        return finished ?? script.cards.shift() ?? { action: "stop" };
+      },
+      select: async (title: string) => {
+        shown.selects.push(title);
+        return script.selects.shift();
+      },
+      editor: async (_title: string, prefill?: string) => {
+        shown.editors.push(prefill);
+        return script.editors.shift();
+      },
+    },
     sessionManager: {
       getSessionId: () => session.id,
       getSessionFile: () => session.file,
@@ -91,7 +117,8 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   createExtension({
     resolver: RESOLVER,
     enqueue: (job) => {
-      jobs.push(job);
+      if (job.kind === "apply") applyJobs.push(job);
+      else jobs.push(job);
       return { jobFile: join(fixture.stateDir, "jobs", "job.json"), runner: "detached" };
     },
     now: () => new Date("2025-03-01T12:00:00.000Z"),
@@ -132,7 +159,7 @@ function harness(fixture: Fixture, options: { memory?: Record<string, unknown>; 
   async function typed(text: string, source = "interactive", mode = "tui") {
     await (await deliver(text, source, { mode }))();
   }
-  return { handlers, commands, jobs, notes, session, ctx, fire, command, toolRound, deliver, receive, typed };
+  return { handlers, commands, jobs, applyJobs, notes, widgets, script, shown, session, ctx, fire, command, toolRound, deliver, receive, typed };
 }
 
 function userMessages(count: number): unknown[] {
@@ -501,4 +528,135 @@ test("/memory status reports the dir, topic counts per scope, the last run and t
   await withPueue.fire("session_start", { reason: "startup" });
   assert.match(await withPueue.command("status"), /runner: detached \(pueue on PATH at \/usr\/local\/bin\/pueue\)/);
   assert.match(await withPueue.command("bogus"), /Unknown subcommand "bogus"/);
+});
+
+const PROPOSALS = `## 2026-10-09 proposal:react-code
+
+- Rule: Do not wrap a provider value in useMemo when its inputs change on every render.
+- Why: The memo never hits.
+- Evidence: "if not we should avoid it."
+- Session: s1
+
+## 2026-10-09 proposal:react-code
+
+- Rule: Return hook output as one object without destructuring.
+- Why: The owner stays clear.
+- Evidence: "keep output whole"
+- Session: s1
+
+## 2026-10-09 proposal:git
+
+- Rule: Rebase before pushing.
+- Why: Linear history.
+- Evidence: "rebase first"
+- Session: s2
+`;
+
+function proposalFixture(): Fixture {
+  const fixture = makeFixture([]);
+  mkdirSync(fixture.dir, { recursive: true });
+  writeFileSync(join(fixture.dir, "proposals.md"), PROPOSALS);
+  const skillDir = join(fixture.root, ".pi", "agent", "skills", "react-code");
+  mkdirSync(skillDir, { recursive: true });
+  writeFileSync(
+    join(skillDir, "SKILL.md"),
+    "---\nname: react-code\ndescription: Rules for React code\n---\n\n# React code\n\n## Context\n\nProviders live next to the feature.\n",
+  );
+  return fixture;
+}
+
+test("startup in the TUI shows a proposal count widget, never a dialog, and skips other starts and modes", async () => {
+  const fixture = proposalFixture();
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["3 memory proposals — /memory proposals"]);
+  assert.equal(h.shown.cards.length + h.shown.selects.length, 0);
+
+  for (const [reason, mode] of [["new", "tui"], ["resume", "tui"], ["fork", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
+    const other = harness(fixture);
+    await other.fire("session_start", { reason }, other.ctx("/work/apollo", mode));
+    assert.equal(other.widgets.has(PROPOSALS_WIDGET), false, `${reason} ${mode}`);
+  }
+
+  const [first] = readProposals(fixture.dir);
+  updateProposalState(fixture.stateDir, (state) => snooze(state, first!.id, new Date("2025-03-01T12:00:00.000Z")));
+  appendRun(fixture.stateDir, { kind: "apply", ts: "2025-03-01T11:00:00.000Z", session: "s0", outcome: "ok", topics: ["git"], summary: "applied 1 to git · 1 skipped" });
+  const later = harness(fixture);
+  await later.fire("session_start", { reason: "startup" });
+  assert.deepEqual(later.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals · last apply: applied 1 to git · 1 skipped"]);
+  const again = harness(fixture);
+  await again.fire("session_start", { reason: "startup" });
+  assert.deepEqual(again.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);
+  assert.match(await again.command("status"), /last proposal apply: ok at 2025-03-01T11:00:00.000Z, applied 1 to git · 1 skipped/);
+});
+
+test("a notice with no pending proposals clears once the user types", async () => {
+  const fixture = makeFixture([]);
+  appendRun(fixture.stateDir, { kind: "apply", ts: "2025-03-01T11:00:00.000Z", session: "s0", outcome: "ok", topics: ["git"], summary: "applied 1 to git" });
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["memory proposals: last apply: applied 1 to git"]);
+  await h.fire("input", { text: "hello", source: "interactive" });
+  assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
+});
+
+test("/memory proposals reviews each card in an overlay and queues one apply job with the comments", async () => {
+  const fixture = proposalFixture();
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  const [memo, hook, rebase] = readProposals(fixture.dir);
+  h.script.cards.push({ action: "comment", comment: "put it under Context" }, { action: "apply" }, { action: "omit" }, { action: "discard" });
+  const note = await h.command("proposals");
+
+  assert.equal(h.shown.cards.length, 4);
+  const firstCard = h.shown.cards[0] as { lines: string[]; options: { overlay: boolean } };
+  assert.equal(firstCard.options.overlay, true);
+  const text = firstCard.lines.join("\n");
+  assert.match(text, /Do not wrap a provider value in useMemo/);
+  assert.match(text, /Providers live next to the feature/);
+  assert.match(text, /~\/\.pi\/agent\/skills\/react-code\/SKILL\.md/);
+  assert.match((h.shown.cards[1] as { lines: string[] }).lines.join("\n"), /Comment put it under Context/);
+
+  assert.equal(h.applyJobs.length, 1);
+  assert.deepEqual(h.applyJobs[0]!.proposals, [
+    { id: memo!.id, skill: "react-code", rule: memo!.rule, why: memo!.why, evidence: memo!.evidence, comment: "put it under Context" },
+  ]);
+  assert.equal(h.applyJobs[0]!.config.dir, fixture.dir);
+  assert.deepEqual(readProposals(fixture.dir).map((proposal) => proposal.id), [memo!.id, hook!.id]);
+  const state = loadProposalState(fixture.stateDir);
+  assert.equal(state.proposals[memo!.id]!.applyingSince, "2025-03-01T12:00:00.000Z");
+  assert.equal(state.proposals[hook!.id]!.snoozedUntil, "2025-03-02T12:00:00.000Z");
+  assert.equal(state.proposals[rebase!.id], undefined);
+  assert.match(note, /^Queued 1 proposal for the background apply job \(detached runner, job .*\); it commits each skill locally and never pushes\. Discarded 1, omitted 1 for 24 hours\. 0 pending\./);
+  assert.equal(h.widgets.get(PROPOSALS_WIDGET), undefined);
+});
+
+test("Esc stops the review and leaves the remaining proposals untouched", async () => {
+  const fixture = proposalFixture();
+  const h = harness(fixture);
+  h.script.cards.push({ action: "omit" }, { action: "stop" });
+  await h.command("proposals");
+  assert.equal(h.shown.cards.length, 2);
+  assert.equal(h.applyJobs.length, 0);
+  assert.equal(readProposals(fixture.dir).length, 3);
+  assert.deepEqual(h.widgets.get(PROPOSALS_WIDGET), ["2 memory proposals — /memory proposals"]);
+});
+
+test("RPC clients review through select and editor dialogs, and print mode lists the proposals", async () => {
+  const fixture = proposalFixture();
+  const h = harness(fixture);
+  h.script.selects.push("Comment…", "Apply", undefined);
+  h.script.editors.push(" only the first sentence ");
+  await h.command("proposals", h.ctx("/work/apollo", "rpc"));
+  assert.equal(h.shown.cards.length, 0);
+  assert.equal(h.shown.selects.length, 3);
+  assert.match(h.shown.selects[0]!, /^Memory proposal 1\/3 for react-code \(2026-10-09\)\nRule: Do not wrap/);
+  assert.match(h.shown.selects[1]!, /Comment: only the first sentence/);
+  assert.equal(h.applyJobs[0]!.proposals[0]!.comment, "only the first sentence");
+  assert.equal(h.applyJobs[0]!.proposals.length, 1);
+
+  const plain = harness(proposalFixture());
+  const listing = await plain.command("proposals", { ...plain.ctx("/work/apollo", "print"), hasUI: false });
+  assert.match(listing, /^3 memory proposals pending/);
+  assert.match(listing, /react-code: Return hook output as one object/);
 });

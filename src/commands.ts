@@ -18,6 +18,7 @@ export interface StatusInput {
   topics: TopicSummary[];
   userMemoryChars: number;
   lastRun: RunRecord | null;
+  lastApply?: RunRecord | null;
   pueuePath: string | null;
 }
 
@@ -33,6 +34,13 @@ function describeRun(run: RunRecord | null): string {
   const error = run.error ? `, error: ${run.error}` : "";
   const rejected = run.rejected && run.rejected.length > 0 ? `, rejected ${run.rejected.join(", ")}` : "";
   return `last writer run: ${run.outcome} at ${run.ts} for session ${run.session || "(unknown)"}${topics}${rejected}${error}`;
+}
+
+function describeApply(run: RunRecord | null | undefined): string {
+  if (!run) return "last proposal apply: none recorded";
+  const summary = run.summary ? `, ${run.summary}` : "";
+  const error = run.error ? `, ${run.error}` : "";
+  return `last proposal apply: ${run.outcome} at ${run.ts}${summary}${error}`;
 }
 
 function describeRunner(config: MemoryConfig, pueuePath: string | null): string {
@@ -53,6 +61,7 @@ export function formatStatus(input: StatusInput): string {
     `topics: ${input.topics.length}`,
     ...counts.map(([scope, count]) => `  ${scope}: ${count}`),
     describeRun(input.lastRun),
+    describeApply(input.lastApply),
     describeRunner(input.config, input.pueuePath),
   ];
   return lines.join("\n");
