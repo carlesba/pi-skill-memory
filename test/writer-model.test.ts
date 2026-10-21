@@ -36,6 +36,29 @@ test("the pi runner passes the prompt on stdin with the writer flags and the mod
   assert.ok(!calls[1]!.args.includes("--model"));
 });
 
+test("the pi runner loads each writer extension explicitly while ambient extensions stay off", async () => {
+  const calls: (readonly string[])[] = [];
+  const fakeSpawn = ((_command: string, args: readonly string[], options: object) => {
+    calls.push(args);
+    return spawn(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"], options);
+  }) as unknown as SpawnFunction;
+  await createPiRunner({ model: "tier/fast", extensions: ["/agent/extensions/tiers", "/opt/provider.ts"], spawn: fakeSpawn })("x");
+  assert.deepEqual(calls[0], [
+    "-p",
+    "--no-extensions",
+    "--no-tools",
+    "--no-session",
+    "--no-skills",
+    "--no-context-files",
+    "-e",
+    "/agent/extensions/tiers",
+    "-e",
+    "/opt/provider.ts",
+    "--model",
+    "tier/fast",
+  ]);
+});
+
 test("the pi runner rejects on a non-zero exit", async () => {
   const fakeSpawn = ((_command: string, _args: readonly string[], options: object) =>
     spawn(process.execPath, ["-e", "process.stdin.resume(); process.stdin.on('end', () => { console.error('boom'); process.exit(3); })"], options)) as unknown as SpawnFunction;

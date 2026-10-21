@@ -22,7 +22,7 @@ export async function runJob(jobFile: string, deps: RunJobDeps = {}): Promise<Ru
   const session = job.sessionId;
   const log = deps.log ?? ((line: string) => appendWriterLog(stateDir, `[${session}] ${line}`));
   mkdirSync(stateDir, { recursive: true });
-  const model = deps.model ?? createPiRunner({ model: job.config.writerModel, cwd: stateDir });
+  const model = deps.model ?? createPiRunner({ model: job.config.writerModel, extensions: job.config.writerExtensions, cwd: stateDir });
   log(`writer started for ${job.sessionFile}`);
   let record: RunRecord;
   try {

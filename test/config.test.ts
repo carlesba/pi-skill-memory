@@ -12,6 +12,7 @@ test("applies defaults when the memory key is missing", () => {
   assert.equal(config.runner, "detached");
   assert.equal(config.pueueGroup, "pi-skill-memory");
   assert.equal(config.writerModel, undefined);
+  assert.deepEqual(config.writerExtensions, []);
   assert.equal(config.minUserMessages, 3);
   assert.equal(config.maxCharsPerTopic, 4000);
   assert.equal(config.maxMemoriesPerTopic, 12);
@@ -39,6 +40,7 @@ test("reads overrides, expands ~ and ignores invalid values", () => {
         dir: "~/notes/memory",
         stateDir: "~/state",
         writerModel: "anthropic/claude",
+        writerExtensions: ["~/tiers", "extensions/router.ts", "/opt/provider.ts", "", 7],
         runner: "pueue",
         maxMemoriesPerTopic: 5,
         halfLifeDays: "soon",
@@ -52,6 +54,8 @@ test("reads overrides, expands ~ and ignores invalid values", () => {
   assert.equal(config.dir, "/home/me/notes/memory");
   assert.equal(config.stateDir, "/home/me/state");
   assert.equal(config.writerModel, "anthropic/claude");
+  assert.deepEqual(config.writerExtensions, ["/home/me/tiers", "/home/me/.pi/agent/extensions/router.ts", "/opt/provider.ts"]);
+  assert.deepEqual(resolveConfig({ memory: { writerExtensions: "~/tiers" } }, { env: {}, home }).writerExtensions, []);
   assert.equal(config.runner, "pueue");
   assert.equal(config.maxMemoriesPerTopic, 5);
   assert.equal(config.halfLifeDays, 90);

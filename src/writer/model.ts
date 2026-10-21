@@ -6,6 +6,7 @@ export type SpawnFunction = typeof nodeSpawn;
 
 export interface PiRunnerOptions {
   model?: string;
+  extensions?: readonly string[];
   command?: string;
   cwd?: string;
   timeoutMs?: number;
@@ -16,8 +17,10 @@ export const PI_WRITER_FLAGS = ["-p", "--no-extensions", "--no-tools", "--no-ses
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 
-export function piArgs(model: string | undefined): string[] {
-  return model ? [...PI_WRITER_FLAGS, "--model", model] : [...PI_WRITER_FLAGS];
+export function piArgs(model: string | undefined, extensions: readonly string[] = []): string[] {
+  const extensionFlags = extensions.flatMap((path) => ["-e", path]);
+  const modelFlags = model ? ["--model", model] : [];
+  return [...PI_WRITER_FLAGS, ...extensionFlags, ...modelFlags];
 }
 
 export function createPiRunner(options: PiRunnerOptions = {}): ModelRunner {
@@ -26,7 +29,7 @@ export function createPiRunner(options: PiRunnerOptions = {}): ModelRunner {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return (prompt) =>
     new Promise((resolve, reject) => {
-      const child = spawn(command, piArgs(options.model), {
+      const child = spawn(command, piArgs(options.model, options.extensions), {
         cwd: options.cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: process.env,

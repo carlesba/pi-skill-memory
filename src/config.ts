@@ -9,6 +9,7 @@ export interface MemoryConfig {
   dir: string;
   stateDir: string;
   writerModel: string | undefined;
+  writerExtensions: string[];
   runner: RunnerKind;
   pueueGroup: string;
   minUserMessages: number;
@@ -103,6 +104,12 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
   const skip = Array.isArray(memory.skipWriteWhenEnv)
     ? memory.skipWriteWhenEnv.filter((name): name is string => typeof name === "string" && name !== "")
     : [...DEFAULT_SKIP_WRITE_WHEN_ENV];
+  const writerExtensions = Array.isArray(memory.writerExtensions)
+    ? memory.writerExtensions.flatMap((path) => {
+        const setting = nonEmptyString(path);
+        return setting ? [resolveSettingPath(setting, home, agentDir)] : [];
+      })
+    : [];
   const learnFromSources = Array.isArray(memory.learnFromSources)
     ? [...new Set(memory.learnFromSources.filter(isInputSource))]
     : [...DEFAULT_LEARN_FROM_SOURCES];
@@ -111,6 +118,7 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
     dir: dirSetting ? resolveSettingPath(dirSetting, home, agentDir) : join(agentDir, "memory"),
     stateDir: stateDirSetting ? resolveSettingPath(stateDirSetting, home, agentDir) : resolveDefaultStateDir(environment),
     writerModel: nonEmptyString(memory.writerModel),
+    writerExtensions,
     runner: memory.runner === "pueue" ? "pueue" : "detached",
     pueueGroup: nonEmptyString(memory.pueueGroup) ?? "pi-skill-memory",
     ...numbers,
