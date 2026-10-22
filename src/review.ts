@@ -2,6 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MemoryConfig } from "./config.ts";
 import {
   loadProposalState,
+  markApplying,
   pendingProposals,
   pruneProposalState,
   saveProposalState,
@@ -12,7 +13,7 @@ import {
   type ProposalState,
 } from "./proposal-state.ts";
 import { readProposals, type Proposal } from "./proposals.ts";
-import { CARD_ACTIONS, type CardInput, type CardResult } from "./review-card.ts";
+import { APPLY_FAILED_HINT, CARD_ACTIONS, type CardInput, type CardResult } from "./review-card.ts";
 import type { ApplyProposal } from "./writer/job.ts";
 import type { RunRecord } from "./writer/runs.ts";
 
@@ -122,9 +123,9 @@ export async function reviewProposals(ui: ReviewUI, deps: ReviewDeps): Promise<R
     }
   }
   if (approved.length > 0) {
-    const since = deps.now().toISOString();
+    const now = deps.now();
     updateProposalState(config.stateDir, (current) => {
-      for (const proposal of approved) updateNote(current, proposal.id, { applyingSince: since, snoozedUntil: undefined });
+      for (const proposal of approved) markApplying(current, proposal.id, now, "user");
     });
     try {
       outcome.queuedWith = deps.enqueueApply(approved);
@@ -161,10 +162,11 @@ export function applyNotice(run: RunRecord | null, state: ProposalState): string
   return run.summary;
 }
 
-export function proposalWidgetLine(pending: number, notice: string | null): string | null {
+export function proposalWidgetLine(pending: number, notice: string | null, failed = 0): string | null {
   const last = notice ? `last apply: ${notice}` : null;
   if (pending > 0) {
-    const head = `${pending} memory proposal${pending === 1 ? "" : "s"} — /proposals`;
+    const failedPart = failed > 0 ? ` (${failed} failed to apply and need${failed === 1 ? "s" : ""} you)` : "";
+    const head = `${pending} memory proposal${pending === 1 ? "" : "s"}${failedPart} — /proposals`;
     return last ? `${head} · ${last}` : head;
   }
   return last ? `memory proposals: ${last}` : null;
@@ -183,12 +185,12 @@ type CardContext = Pick<ExtensionContext, "ui">;
 export function dialogCardTitle(input: CardInput): string {
   const lines = [
     `Memory proposal ${input.position}/${input.total} for ${input.proposal.skill} (${input.proposal.date})`,
+    ...(input.lastError === "" ? [] : [`⚠ Apply failed and needs you: ${input.lastError}`, APPLY_FAILED_HINT]),
     `Rule: ${input.proposal.rule}`,
     `Why: ${input.proposal.why}`,
   ];
   if (input.proposal.evidence !== "") lines.push(`Evidence: "${input.proposal.evidence}"`);
   if (input.comment.trim() !== "") lines.push(`Comment: ${input.comment.trim()}`);
-  if (input.lastError !== "") lines.push(`Last apply: ${input.lastError}`);
   if (input.skillPath) lines.push(`Skill: ${input.skillPath}`);
   return lines.join("\n");
 }

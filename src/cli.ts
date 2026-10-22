@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveAgentDir, resolveConfig, type MemoryConfig } from "./config.ts";
-import { loadProposalState, snooze, updateNote, updateProposalState, type ProposalState } from "./proposal-state.ts";
+import { loadProposalState, markApplying, needsAttention, snooze, updateNote, updateProposalState, type ProposalState } from "./proposal-state.ts";
 import { discardProposal, readProposals, type Proposal } from "./proposals.ts";
 import { loadPrunedState, reviewQueue } from "./review.ts";
 import { proposalMarkdown, relevantHeading, skillBody, skillSection } from "./review-card.ts";
@@ -67,7 +67,8 @@ function tags(proposal: Proposal, state: ProposalState, now: Date): string {
   const marks: string[] = [];
   if (note?.snoozedUntil && Date.parse(note.snoozedUntil) > now.getTime()) marks.push("omitted");
   if (note?.comment) marks.push("✎");
-  if (note?.lastError) marks.push("⚠");
+  if (needsAttention(note, now)) marks.push("⚠ apply failed");
+  else if (note?.lastError) marks.push("⚠");
   return marks.length === 0 ? "" : ` [${marks.join(" ")}]`;
 }
 
@@ -179,7 +180,7 @@ async function act(choice: Exclude<ReviewChoice, "skip" | "quit">, proposal: Pro
   const { config } = deps;
   if (choice === "apply") {
     const note = loadProposalState(config.stateDir).proposals[proposal.id];
-    updateProposalState(config.stateDir, (state) => updateNote(state, proposal.id, { applyingSince: deps.now().toISOString(), snoozedUntil: undefined, lastError: undefined }));
+    updateProposalState(config.stateDir, (state) => markApplying(state, proposal.id, deps.now(), "user"));
     try {
       deps.enqueue({
         kind: "apply",

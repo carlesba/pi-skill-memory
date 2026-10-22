@@ -32,7 +32,7 @@ import {
 } from "./human.ts";
 import { extractToolPaths } from "./paths.ts";
 import { knownRepoIdentities, promptNamedRepos, reminderLine, reminderTopics } from "./reminders.ts";
-import { pendingProposals, updateProposalState } from "./proposal-state.ts";
+import { failedApplies, markApplying, pendingProposals, retryableProposals, updateNote, updateProposalState } from "./proposal-state.ts";
 import { discardProposal, readProposals } from "./proposals.ts";
 import { createRepoResolver, type RepoResolver } from "./repo.ts";
 import {
@@ -201,12 +201,47 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       const proposals = readProposals(session.config.dir);
       const proposalState = loadPrunedState(session.config, proposals);
       const pending = pendingProposals(proposals, proposalState, deps.now()).length;
+      const failed = failedApplies(proposals, proposalState, deps.now()).length;
       const lastApply = readLastRun(session.config.stateDir, "apply");
       const notice = withNotice ? applyNotice(lastApply, proposalState) : null;
-      const line = proposalWidgetLine(pending, notice);
+      const line = proposalWidgetLine(pending, notice, failed);
       ctx.ui.setWidget(PROPOSALS_WIDGET, line === null ? undefined : [line]);
       session.widgetClearsOnInput = line !== null;
       if (notice && lastApply) updateProposalState(session.config.stateDir, (current) => (current.applyNoticeShown = lastApply.ts));
+    }
+
+    function retryApprovedProposals(session: SessionState, ctx: Pick<ExtensionContext, "cwd">): void {
+      const config = session.config;
+      const proposals = readProposals(config.dir);
+      const now = deps.now();
+      const retry = retryableProposals(proposals, loadPrunedState(config, proposals), now);
+      if (retry.length === 0) return;
+      const state = updateProposalState(config.stateDir, (current) => {
+        for (const proposal of retry) markApplying(current, proposal.id, now, "retry");
+      });
+      try {
+        deps.enqueue({
+          kind: "apply",
+          config,
+          sessionId: session.sessionId,
+          cwd: ctx.cwd,
+          packageRoot: deps.packageRoot,
+          createdAt: now.toISOString(),
+          proposals: retry.map((proposal) => ({
+            id: proposal.id,
+            skill: proposal.skill,
+            rule: proposal.rule,
+            why: proposal.why,
+            evidence: proposal.evidence,
+            comment: state.proposals[proposal.id]?.comment ?? "",
+          })),
+        });
+      } catch (error) {
+        updateProposalState(config.stateDir, (current) => {
+          for (const proposal of retry) updateNote(current, proposal.id, { applyingSince: undefined });
+        });
+        logFailure("retrying approved proposals", error);
+      }
     }
 
     function clearProposalWidget(session: SessionState, ctx: Pick<ExtensionContext, "ui">): void {
@@ -217,7 +252,10 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     pi.on("session_start", (event, ctx) => {
       try {
         const session = startSession(ctx);
-        if (event.reason === "startup" && ctx.mode === "tui") showProposalWidget(session, ctx, true);
+        if (event.reason === "startup" && ctx.mode === "tui") {
+          retryApprovedProposals(session, ctx);
+          showProposalWidget(session, ctx, true);
+        }
       } catch (error) {
         logFailure("session_start", error);
       }

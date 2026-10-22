@@ -5,13 +5,19 @@ import { writeFileAtomic, type Proposal } from "./proposals.ts";
 export const PROPOSAL_STATE_FILE = "proposals-state.json";
 export const SNOOZE_MS = 24 * 60 * 60_000;
 export const APPLYING_TTL_MS = 2 * 60 * 60_000;
+export const MAX_APPLY_ATTEMPTS = 3;
 
 export interface ProposalNote {
   comment?: string;
   snoozedUntil?: string;
   lastError?: string;
   applyingSince?: string;
+  approvedAt?: string;
+  attempts?: number;
+  needsUser?: boolean;
 }
+
+type NoteChange = { [K in keyof ProposalNote]?: ProposalNote[K] | "" };
 
 export interface ProposalState {
   proposals: Record<string, ProposalNote>;
@@ -29,10 +35,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readNote(value: unknown): ProposalNote | null {
   if (!isRecord(value)) return null;
   const note: ProposalNote = {};
-  for (const key of ["comment", "snoozedUntil", "lastError", "applyingSince"] as const) {
+  for (const key of ["comment", "snoozedUntil", "lastError", "applyingSince", "approvedAt"] as const) {
     const field = value[key];
     if (typeof field === "string" && field !== "") note[key] = field;
   }
+  if (typeof value.attempts === "number" && Number.isInteger(value.attempts) && value.attempts > 0) note.attempts = value.attempts;
+  if (value.needsUser === true) note.needsUser = true;
   return Object.keys(note).length > 0 ? note : null;
 }
 
@@ -66,14 +74,14 @@ export function updateProposalState(stateDir: string, mutate: (state: ProposalSt
   return state;
 }
 
-export function updateNote(state: ProposalState, id: string, change: Partial<Record<keyof ProposalNote, string | undefined>>): void {
-  const note: ProposalNote = { ...state.proposals[id] };
-  for (const [key, value] of Object.entries(change) as [keyof ProposalNote, string | undefined][]) {
-    if (value === undefined || value === "") delete note[key];
+export function updateNote(state: ProposalState, id: string, change: NoteChange): void {
+  const note: Record<string, unknown> = { ...state.proposals[id] };
+  for (const [key, value] of Object.entries(change)) {
+    if (value === undefined || value === "" || value === false) delete note[key];
     else note[key] = value;
   }
   if (Object.keys(note).length === 0) delete state.proposals[id];
-  else state.proposals[id] = note;
+  else state.proposals[id] = note as ProposalNote;
 }
 
 export function pruneProposalState(state: ProposalState, existing: Iterable<string>): boolean {
@@ -107,10 +115,40 @@ export function snooze(state: ProposalState, id: string, now: Date): void {
   updateNote(state, id, { snoozedUntil: new Date(now.getTime() + SNOOZE_MS).toISOString() });
 }
 
+export function needsAttention(note: ProposalNote | undefined, now: Date): boolean {
+  if (!note?.approvedAt || isApplying(note, now)) return false;
+  return note.needsUser === true || (note.attempts ?? 0) >= MAX_APPLY_ATTEMPTS;
+}
+
+export function isAwaitingRetry(note: ProposalNote | undefined, now: Date): boolean {
+  return note?.approvedAt !== undefined && !isApplying(note, now) && !needsAttention(note, now);
+}
+
+export function markApplying(state: ProposalState, id: string, now: Date, approval: "user" | "retry"): void {
+  const note = state.proposals[id];
+  const since = now.toISOString();
+  updateNote(state, id, {
+    applyingSince: since,
+    snoozedUntil: undefined,
+    approvedAt: approval === "user" ? since : note?.approvedAt ?? since,
+    attempts: approval === "user" ? 1 : (note?.attempts ?? 0) + 1,
+    needsUser: undefined,
+    lastError: approval === "user" ? undefined : note?.lastError,
+  });
+}
+
+export function retryableProposals(proposals: Proposal[], state: ProposalState, now: Date): Proposal[] {
+  return proposals.filter((proposal) => isAwaitingRetry(state.proposals[proposal.id], now));
+}
+
+export function failedApplies(proposals: Proposal[], state: ProposalState, now: Date): Proposal[] {
+  return proposals.filter((proposal) => needsAttention(state.proposals[proposal.id], now));
+}
+
 export function pendingProposals(proposals: Proposal[], state: ProposalState, now: Date): Proposal[] {
   return proposals.filter((proposal) => {
     const note = state.proposals[proposal.id];
-    return !isSnoozed(note, now) && !isApplying(note, now);
+    return !isSnoozed(note, now) && !isApplying(note, now) && !isAwaitingRetry(note, now);
   });
 }
 

@@ -5,9 +5,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+  failedApplies,
   isApplying,
   loadProposalState,
+  markApplying,
+  MAX_APPLY_ATTEMPTS,
   pendingProposals,
+  retryableProposals,
   proposalStatePath,
   pruneProposalState,
   saveProposalState,
@@ -17,6 +21,7 @@ import {
   updateProposalState,
   type ProposalState,
 } from "../src/proposal-state.ts";
+import { proposalWidgetLine } from "../src/review.ts";
 import { discardProposal, parseProposals, proposalId, readProposals, withoutProposals } from "../src/proposals.ts";
 import { runGit } from "../src/writer/commit.ts";
 import { lockPath } from "../src/writer/lock.ts";
@@ -101,6 +106,59 @@ test("snoozed and applying proposals leave the pending list until their time is 
   assert.equal(isApplying(state.proposals[proposals[1]!.id], tomorrow), false);
 });
 
+test("an approved proposal stays out of review until its apply fails in a way that needs the user", () => {
+  const proposals = parseProposals(SAMPLE);
+  const id = proposals[0]!.id;
+  const approvedAt = new Date("2026-10-10T08:00:00.000Z");
+  const later = new Date(approvedAt.getTime() + 3 * 60 * 60_000);
+  const state: ProposalState = { proposals: {} };
+  const ids = (list: { id: string }[]) => list.map((proposal) => proposal.id);
+
+  markApplying(state, id, approvedAt, "user");
+  assert.equal(ids(pendingProposals(proposals, state, approvedAt)).includes(id), false);
+  assert.deepEqual(ids(retryableProposals(proposals, state, approvedAt)), []);
+  assert.deepEqual(ids(retryableProposals(proposals, state, later)), [id], "a job that died is retried once its applying window ends");
+
+  updateNote(state, id, { applyingSince: undefined, lastError: "skipped: SKILL.md changed while the model was working" });
+  assert.equal(ids(pendingProposals(proposals, state, later)).includes(id), false);
+  assert.deepEqual(ids(retryableProposals(proposals, state, later)), [id]);
+  assert.deepEqual(failedApplies(proposals, state, later), []);
+
+  updateNote(state, id, { needsUser: true, lastError: "failed: model run failed: no credentials" });
+  assert.deepEqual(ids(retryableProposals(proposals, state, later)), []);
+  assert.deepEqual(ids(failedApplies(proposals, state, later)), [id]);
+  assert.equal(ids(pendingProposals(proposals, state, later)).includes(id), true);
+
+  markApplying(state, id, later, "user");
+  assert.deepEqual(state.proposals[id], { applyingSince: later.toISOString(), approvedAt: later.toISOString(), attempts: 1 });
+});
+
+test("automatic retries stop after the attempt limit and hand the proposal back to the user", () => {
+  const proposals = parseProposals(SAMPLE);
+  const id = proposals[0]!.id;
+  const now = new Date("2026-10-10T08:00:00.000Z");
+  const state: ProposalState = { proposals: {} };
+  markApplying(state, id, now, "user");
+  for (let attempt = 1; attempt < MAX_APPLY_ATTEMPTS; attempt++) {
+    updateNote(state, id, { applyingSince: undefined, lastError: "failed: model answer rejected: body is unchanged" });
+    assert.equal(retryableProposals(proposals, state, now).length, 1, `attempt ${attempt}`);
+    markApplying(state, id, now, "retry");
+  }
+  updateNote(state, id, { applyingSince: undefined });
+  assert.equal(state.proposals[id]!.attempts, MAX_APPLY_ATTEMPTS);
+  assert.equal(state.proposals[id]!.lastError, "failed: model answer rejected: body is unchanged");
+  assert.deepEqual(retryableProposals(proposals, state, now), []);
+  assert.equal(failedApplies(proposals, state, now).length, 1);
+});
+
+test("the state file keeps the approval, attempt count and needs-user flag", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "psm-proposal-approval-"));
+  const saved = updateProposalState(stateDir, (state) => {
+    updateNote(state, "a", { approvedAt: "2026-10-10T08:00:00.000Z", attempts: 2, needsUser: true, lastError: "failed: x" });
+  });
+  assert.deepEqual(loadProposalState(stateDir), saved);
+});
+
 test("the state file round-trips comments, drops entries of removed proposals and survives garbage", () => {
   const stateDir = mkdtempSync(join(tmpdir(), "psm-proposal-state-"));
   assert.deepEqual(loadProposalState(stateDir), { proposals: {} });
@@ -168,4 +226,9 @@ test("discard waits for a writer that holds the lock", async () => {
   assert.deepEqual(result.removed, [target!.id]);
   assert.equal(result.commit, null);
   assert.deepEqual(readProposals(dir).map((proposal) => proposal.skill), ["react-code", "react-code", "git"]);
+});
+
+test("the startup widget says how many proposals failed to apply and need the user", () => {
+  assert.equal(proposalWidgetLine(2, null, 1), "2 memory proposals (1 failed to apply and needs you) — /proposals");
+  assert.equal(proposalWidgetLine(2, null), "2 memory proposals — /proposals");
 });

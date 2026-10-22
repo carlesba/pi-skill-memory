@@ -46,6 +46,11 @@ test("the relevant heading uses token overlap, and proposal markdown leads with 
   assert.match(proposalMarkdown(input({ skillText: null, comment: "under Providers" })), /^\*\*Rule\*\* Do not wrap[\s\S]*\*\*Comment\*\* under Providers/);
 });
 
+test("a proposal whose apply failed leads with the failure and how to act on it", () => {
+  const markdown = proposalMarkdown(input({ skillText: null, lastError: "failed: model run failed: no credentials" }));
+  assert.match(markdown, /^\*\*⚠ Apply failed and needs you\*\* failed: model run failed: no credentials\n\nFix the cause, then Apply to retry it or Discard to drop it\.\n\n\*\*Rule\*\*/);
+});
+
 test("hard-wrapped skill paragraphs are joined so the entry rewraps them, leaving lists, headings and code alone", () => {
   const source = "# Title\n\nfirst half\nsecond half\n\n- item one\n  continued\n- item two\n\n```\ncode a\ncode b\n```\n";
   assert.equal(unwrapParagraphs(source), "# Title\n\nfirst half second half\n\n- item one continued\n- item two\n\n```\ncode a\ncode b\n```\n");

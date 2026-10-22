@@ -196,7 +196,10 @@ test("skips a skill with uncommitted changes or off main, keeps its proposals an
     assert.equal(git(fixture.dotfiles, "rev-list", "--count", "HEAD").trim(), "1", label);
     assert.equal(readProposals(fixture.config.dir).length, 3, label);
     const notes = loadProposalState(fixture.config.stateDir).proposals;
-    for (const proposal of proposals) assert.match(notes[proposal.id]!.lastError!, reason, label);
+    for (const proposal of proposals) {
+      assert.match(notes[proposal.id]!.lastError!, reason, label);
+      assert.equal(notes[proposal.id]!.needsUser, true, label);
+    }
   }
 });
 
@@ -211,7 +214,53 @@ test("a rejected model answer leaves the skill and proposals alone and fails the
   assert.match(record.error!, /react-code: model answer rejected: frontmatter name changed from react-code to react/);
   assert.equal(readFileSync(fixture.skillFile, "utf8"), SKILL);
   assert.equal(readProposals(fixture.config.dir).length, 3);
-  assert.match(loadProposalState(fixture.config.stateDir).proposals[proposals[0]!.id]!.lastError!, /^failed: model answer rejected/);
+  const note = loadProposalState(fixture.config.stateDir).proposals[proposals[0]!.id]!;
+  assert.match(note.lastError!, /^failed: model answer rejected/);
+  assert.equal(note.needsUser, undefined);
+});
+
+test("a model run that fails for lack of credentials needs the user, and other run failures do not", async () => {
+  for (const [label, message, needsUser] of [
+    ["credentials", "pi exited with 1: tier/fast: no credentials for any of amazon-bedrock/x, anthropic/y", true],
+    ["network", "pi exited with 1: fetch failed", undefined],
+  ] as const) {
+    const fixture = setup();
+    const proposals = applyProposals(fixture);
+    const result = await runApply(job(fixture, proposals), {
+      model: async () => {
+        throw new Error(message);
+      },
+      home: fixture.root,
+    });
+    assert.equal(result.outcome, "failed", label);
+    const note = loadProposalState(fixture.config.stateDir).proposals[proposals[0]!.id]!;
+    assert.match(note.lastError!, /^failed: model run failed: pi exited with 1/, label);
+    assert.equal(note.needsUser, needsUser, label);
+    assert.equal(readProposals(fixture.config.dir).length, 3, label);
+  }
+});
+
+test("two apply jobs for the same skill run one after the other instead of tripping over each other", async () => {
+  const fixture = setup();
+  const [first, second] = applyProposals(fixture);
+  const SECOND_EDIT = EDITED.replace("Providers live next to the feature.", "Providers live next to the feature, always.");
+  let running = 0;
+  let overlapped = false;
+  const model = (body: string) => async () => {
+    running++;
+    if (running > 1) overlapped = true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    running--;
+    return JSON.stringify({ body, summary: "ok" });
+  };
+  const lock = { pollMs: 10 };
+  const [a, b] = await Promise.all([
+    runApply(job(fixture, [first!]), { model: model(EDITED), home: fixture.root, lock }),
+    runApply(job(fixture, [second!]), { model: model(SECOND_EDIT), home: fixture.root, lock }),
+  ]);
+  assert.equal(overlapped, false);
+  assert.deepEqual([a.outcome, b.outcome], ["ok", "ok"]);
+  assert.deepEqual(readProposals(fixture.config.dir).map((proposal) => proposal.skill), ["git"]);
 });
 
 test("an unknown skill fails, and a proposal no longer in proposals.md is dropped", async () => {
@@ -224,7 +273,7 @@ test("an unknown skill fails, and a proposal no longer in proposals.md is droppe
     { model, home: fixture.root },
   );
   assert.equal(prompts.length, 0);
-  assert.deepEqual(result.skills, [{ skill: "git", status: "failed", ids: [git1!.id], reason: "skill git is not in the skill index" }]);
+  assert.deepEqual(result.skills, [{ skill: "git", status: "failed", ids: [git1!.id], reason: "skill git is not in the skill index", needsUser: true }]);
 });
 
 test("validateApply checks frontmatter, name, emptiness and growth", () => {
@@ -255,8 +304,8 @@ test("the apply job round-trips through its job file and the summary counts skip
     summarizeApply([
       { skill: "react-code", status: "applied", ids: ["a", "b"], summary: "" },
       { skill: "git", status: "applied", ids: ["c"], summary: "" },
-      { skill: "nightshift", status: "skipped", ids: ["d"], reason: "dirty" },
-      { skill: "mux", status: "failed", ids: ["e", "f"], reason: "bad" },
+      { skill: "nightshift", status: "skipped", ids: ["d"], reason: "dirty", needsUser: true },
+      { skill: "mux", status: "failed", ids: ["e", "f"], reason: "bad", needsUser: false },
     ]),
     "applied 2 to react-code, 1 to git · 1 skipped · 2 failed",
   );

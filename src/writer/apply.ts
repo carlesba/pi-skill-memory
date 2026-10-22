@@ -31,7 +31,7 @@ export interface SkillTarget {
 
 export type SkillOutcome =
   | { skill: string; status: "applied"; ids: string[]; summary: string }
-  | { skill: string; status: "skipped" | "failed"; ids: string[]; reason: string };
+  | { skill: string; status: "skipped" | "failed"; ids: string[]; reason: string; needsUser: boolean };
 
 export interface ApplyRunResult {
   outcome: RunOutcomeKind;
@@ -40,6 +40,12 @@ export interface ApplyRunResult {
 }
 
 type Located = { ok: true; target: SkillTarget } | { ok: false; status: "skipped" | "failed"; reason: string };
+
+const NEEDS_USER_RUNNER_ERROR = /no api key|no credentials|no models match|not authenticated|unauthori[sz]ed|expired|log ?in|forbidden|access denied/i;
+
+export function runnerErrorNeedsUser(reason: string): boolean {
+  return NEEDS_USER_RUNNER_ERROR.test(reason);
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -106,14 +112,21 @@ async function applySkill(
   deps: { model: ModelRunner; git: GitExec; template: string },
 ): Promise<SkillOutcome> {
   const ids = proposals.map((proposal) => proposal.id);
-  if (!located.ok) return { skill, status: located.status, ids, reason: located.reason };
+  if (!located.ok) return { skill, status: located.status, ids, reason: located.reason, needsUser: true };
   const target = located.target;
   const original = readFileSync(target.file, "utf8");
   const name = parseFrontmatter(original)?.fields.name?.trim() ?? "";
   const prompt = buildApplyPrompt({ skillName: name || skill, skill: original, proposals }, deps.template);
+  let answer: string;
+  try {
+    answer = await deps.model(prompt);
+  } catch (error) {
+    const reason = `model run failed: ${errorMessage(error)}`;
+    return { skill, status: "failed", ids, reason, needsUser: runnerErrorNeedsUser(reason) };
+  }
   let result: ReturnType<typeof validateApply>;
   try {
-    result = validateApply(extractJson(await deps.model(prompt)), {
+    result = validateApply(extractJson(answer), {
       name,
       original,
       addedChars: proposals.reduce((sum, proposal) => sum + proposal.rule.length + proposal.comment.length, 0),
@@ -121,15 +134,17 @@ async function applySkill(
   } catch (error) {
     result = { ok: false, error: errorMessage(error) };
   }
-  if (!result.ok) return { skill, status: "failed", ids, reason: `model answer rejected: ${result.error}` };
+  if (!result.ok) return { skill, status: "failed", ids, reason: `model answer rejected: ${result.error}`, needsUser: false };
   const dirty = dirtyReason(target, deps.git);
-  if (dirty) return { skill, status: "skipped", ids, reason: dirty };
-  if (readFileSync(target.file, "utf8") !== original) return { skill, status: "skipped", ids, reason: "SKILL.md changed while the model was working" };
+  if (dirty) return { skill, status: "skipped", ids, reason: dirty, needsUser: true };
+  if (readFileSync(target.file, "utf8") !== original) {
+    return { skill, status: "skipped", ids, reason: "SKILL.md changed while the model was working", needsUser: false };
+  }
   writePreservingMode(target.file, result.body);
   const commit = commitPaths(target.root, [target.relativePath], skillCommitMessage(skill, proposals, result.summary), deps.git);
   if (!commit.committed) {
     writePreservingMode(target.file, original);
-    return { skill, status: "failed", ids, reason: `commit failed, SKILL.md restored: ${commit.reason}` };
+    return { skill, status: "failed", ids, reason: `commit failed, SKILL.md restored: ${commit.reason}`, needsUser: true };
   }
   return { skill, status: "applied", ids, summary: result.summary };
 }
@@ -175,36 +190,38 @@ export async function runApply(job: ApplyJob, deps: ApplyDeps): Promise<ApplyRun
     groups.set(proposal.skill, [...(groups.get(proposal.skill) ?? []), proposal]);
   }
   const roots = skillIndexRoots({ agentDir: config.agentDir, home, cwd: job.cwd || home });
-  const skills: SkillOutcome[] = [];
-  for (const [skill, proposals] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    let outcome: SkillOutcome;
-    try {
-      outcome = await applySkill(skill, proposals, locateSkill(skill, roots, config.dir, git), { model: deps.model, git, template });
-    } catch (error) {
-      outcome = { skill, status: "failed", ids: proposals.map((proposal) => proposal.id), reason: errorMessage(error) };
-    }
-    log(outcome.status === "applied" ? `applied ${outcome.ids.length} to ${skill}` : `${outcome.status} ${skill}: ${outcome.reason}`);
-    skills.push(outcome);
-  }
-  const applied = skills.filter((outcome) => outcome.status === "applied");
-  if (applied.length > 0) {
-    const removal = await withLock(
-      config.dir,
-      async () =>
-        removeProposals(config.dir, applied.flatMap((outcome) => outcome.ids), {
+  const skills = await withLock(
+    config.dir,
+    async () => {
+      const outcomes: SkillOutcome[] = [];
+      for (const [skill, proposals] of [...groups.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        let outcome: SkillOutcome;
+        try {
+          outcome = await applySkill(skill, proposals, locateSkill(skill, roots, config.dir, git), { model: deps.model, git, template });
+        } catch (error) {
+          outcome = { skill, status: "failed", ids: proposals.map((proposal) => proposal.id), reason: errorMessage(error), needsUser: false };
+        }
+        log(outcome.status === "applied" ? `applied ${outcome.ids.length} to ${skill}` : `${outcome.status} ${skill}: ${outcome.reason}`);
+        outcomes.push(outcome);
+      }
+      const applied = outcomes.filter((outcome) => outcome.status === "applied");
+      if (applied.length > 0) {
+        const removal = removeProposals(config.dir, applied.flatMap((outcome) => outcome.ids), {
           autoCommit: config.autoCommit,
           message: removalMessage(applied),
           git,
-        }),
-      deps.lock,
-    );
-    if (removal.commit) log(removal.commit.committed ? "committed proposals.md" : `no proposals.md commit: ${removal.commit.reason}`);
-  }
+        });
+        if (removal.commit) log(removal.commit.committed ? "committed proposals.md" : `no proposals.md commit: ${removal.commit.reason}`);
+      }
+      return outcomes;
+    },
+    deps.lock,
+  );
   updateProposalState(config.stateDir, (state) => {
     for (const outcome of skills) {
       for (const id of outcome.ids) {
         if (outcome.status === "applied") delete state.proposals[id];
-        else updateNote(state, id, { applyingSince: undefined, lastError: `${outcome.status}: ${outcome.reason}` });
+        else updateNote(state, id, { applyingSince: undefined, lastError: `${outcome.status}: ${outcome.reason}`, needsUser: outcome.needsUser });
       }
     }
     for (const proposal of job.proposals) {

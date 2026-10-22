@@ -83,15 +83,17 @@ export function skillBody(text: string): string {
   return unwrapParagraphs(splitFrontmatter(text)?.body ?? text);
 }
 
+export const APPLY_FAILED_HINT = "Fix the cause, then Apply to retry it or Discard to drop it.";
+
 export function proposalMarkdown(input: CardInput): string {
   const { proposal } = input;
-  const parts = [
+  const parts = input.lastError === "" ? [] : [`**⚠ Apply failed and needs you** ${input.lastError}`, APPLY_FAILED_HINT];
+  parts.push(
     `**Rule** ${proposal.rule}`,
     `**Why** ${proposal.why}`,
-  ];
+  );
   if (proposal.evidence !== "") parts.push(`> “${proposal.evidence}”`);
   if (input.comment.trim() !== "") parts.push(`**Comment** ${input.comment.trim()}`);
-  if (input.lastError !== "") parts.push(`**Last apply** ${input.lastError}`);
   return parts.join("\n\n");
 }
 
