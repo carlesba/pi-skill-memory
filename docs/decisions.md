@@ -54,7 +54,8 @@ Record each change to the extension with its hypothesis, the metric that will ju
 
 - ID: D-004
 - Date: 2026-10-29
-- Decision: Pending writer model tier evaluation; no model change decided.
+- Decision: Pending owner confirmation. Proposed: move `writerModel` from `tier/fast` to `tier/smart`.
+- Evidence (offline replay, 20 sessions, live codex profile, blinded Bedrock Opus judge): fast `openai-codex/gpt-6-luna` passed validation 18/20 (both failures were evidence quotes over 20 words), produced 1.30 candidates per session, judge mean 3.94, 42.3% of candidates scored at least 4. Smart `openai-codex/gpt-6.1-sol` passed 20/20, produced 1.80 candidates per session, judge mean 4.21, 88.9% scored at least 4. Mean latency 11.7 s against 13.2 s; token cost was not observable. Mid `gpt-6.1-terra` is rejected on the ChatGPT account, so `tier/mid` cannot run at all under the codex profile. Caveats: one judge, historical memory snapshots reconstructed from dotfiles git with a timing heuristic.
 - Why: Evaluate cost and extraction quality before changing the writer model.
 - Hypothesis: A faster tier may preserve useful lessons at lower cost.
 - Metric(s) and how to read them with `pi-memory stats`: Offline replay of 20 sessions across fast/mid/smart; results in `~/.local/state/pi-skill-memory/evals/2026-10-29-model-tiers/`. Use stats writer outcomes and candidate-drop reasons as production context; stats does not score replay quality or costs by model.
@@ -66,7 +67,8 @@ Record each change to the extension with its hypothesis, the metric that will ju
 
 - ID: D-005
 - Date: 2026-10-29
-- Decision: Pending recall audit; no recall change decided.
+- Decision: Pending; the audit is done and recall is the bottleneck, so the next change targets recall before capture.
+- Evidence (same 20 sessions, judged): 29 topic loads should have happened, 3 did, 0 loads were irrelevant. Recall is about 10% with perfect precision. Of the 26 misses, the judge attributed 15 to a description whose wording does not match the moment it applies, 11 to an agent skipping a topic whose description did match, and none to the need arising mid-task or the topic being buried. Reminders reach top-level sessions about as often as child sessions (37 against 35 deliveries), and many arrive inside tool results rather than as reminder messages; ledger `reminded` counts are per topic mentioned, so they overstate reminder messages.
 - Why: Determine whether topic skills load when relevant, rather than optimizing reminder counts alone.
 - Hypothesis: Missed relevant loads explain some repeated teaching.
 - Metric(s) and how to read them with `pi-memory stats`: Compare reminded and loaded columns and topics never loaded with relevance judgments in the recall audit in `~/.local/state/pi-skill-memory/evals/2026-10-29-model-tiers/`. Stats counts events, not relevance.
