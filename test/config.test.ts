@@ -80,7 +80,7 @@ test("selector defaults and explicit overrides stay under the memory key", () =>
   const defaults = resolveConfig({});
   assert.equal(defaults.selectorModel, "tier/fast");
   assert.equal(defaults.reminders, true);
-  assert.deepEqual(defaults.selector, { enabled: true, mode: "inject", timeoutMs: 5000, maxChars: 3000 });
+  assert.deepEqual(defaults.selector, { enabled: false, mode: "inject", timeoutMs: 5000, maxChars: 3000 });
   const configured = resolveConfig({ memory: { selectorModel: "provider/model", reminders: false, selector: { enabled: false, mode: "point", timeoutMs: 12, maxChars: 80 } } });
   assert.equal(configured.selectorModel, "provider/model");
   assert.equal(configured.reminders, false);
@@ -102,4 +102,9 @@ test("example cap defaults to three and zero disables new episode capture", () =
   assert.equal(resolveConfig({}).maxExamplesPerTopic, 3);
   assert.equal(resolveConfig({ memory: { maxExamplesPerTopic: 0 } }).maxExamplesPerTopic, 0);
   assert.equal(resolveConfig({ memory: { maxExamplesPerTopic: -1 } }).maxExamplesPerTopic, 3);
+});
+
+test("skills instruction defaults on and can be disabled", () => {
+  assert.equal(resolveConfig({}).skillsInstruction, true);
+  assert.equal(resolveConfig({ memory: { skillsInstruction: false } }).skillsInstruction, false);
 });

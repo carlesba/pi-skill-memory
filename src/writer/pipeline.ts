@@ -100,7 +100,7 @@ const USER_LEDGER_FILE = "user.ledger.json";
 const PROPOSALS_FILE = "proposals.md";
 const IGNORED_FLAG = "an ignored vote shows agents miss this topic when it applies; reword the description so it loads at that moment";
 
-function writeAtomic(path: string, content: string): void {
+export function writeAtomic(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, content);

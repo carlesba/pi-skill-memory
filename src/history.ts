@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Candidate, Episode, MemoryVote } from "./writer/validate.ts";
 
-export type HistoryKind = "usage" | "votes" | "extractions" | "examples";
+export type HistoryKind = "usage" | "votes" | "extractions" | "examples" | "descriptions";
 
 export interface DroppedExtractionItem {
   type: "candidate" | "vote" | "episode";

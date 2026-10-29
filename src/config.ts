@@ -11,6 +11,7 @@ export interface MemoryConfig {
   selectorModel: string;
   selector: { enabled: boolean; mode: "inject" | "point"; timeoutMs: number; maxChars: number };
   reminders: boolean;
+  skillsInstruction: boolean;
   writerModel: string | undefined;
   writerExtensions: string[];
   runner: RunnerKind;
@@ -127,11 +128,12 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
   return {
     selectorModel: nonEmptyString(memory.selectorModel) ?? "tier/fast",
     selector: {
-      enabled: typeof selector.enabled === "boolean" ? selector.enabled : true,
+      enabled: typeof selector.enabled === "boolean" ? selector.enabled : false,
       mode: selector.mode === "point" ? "point" : "inject",
       timeoutMs: nonNegativeNumber(selector.timeoutMs, 5000),
       maxChars: nonNegativeNumber(selector.maxChars, 3000),
     },
+    skillsInstruction: memory.skillsInstruction !== false,
     flushBeforeCompaction: memory.flushBeforeCompaction !== false,
     reminders: typeof memory.reminders === "boolean" ? memory.reminders : true,
     agentDir,

@@ -138,19 +138,32 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Baseline: 3 of 29 relevant loads in real sessions (D-005). The explicit-selection ceiling from the simulation is 23 to 25 of 29.
 - Success: The concept holds if the best skills-only variant reaches at least 16 of 29 unprompted loads in replay, with at most 2 false loads on the 10 irrelevant moments, and live topic loads rise over the review window. If it falls short, drop skill registration for memories and move to a matcher-first design with storage chosen for retrieval, closer to Hermes.
 - Review on: 2026-11-19
-- Outcome (filled at review): pending
+- Outcome (filled at review): Concept holds in replay with V3 (16/29); precision clause relaxed by D-011; confirm live at review.
+
+## D-011 — Adopt V3: skills instruction and request-phrased descriptions
+
+- ID: D-011
+- Date: 2026-10-29
+- Decision: Adopt replay variant V3: add a session-static instruction to scan matching memory skills, enabled by default through `memory.skillsInstruction`, and write topic descriptions in the words a user would type in a request, naming actions, artifacts and scoped repositories. Provide `pi-memory redescribe [--dry-run] [--topic <name>]` for existing descriptions without rewriting bodies. Make `selector.enabled` default to false, retaining the selector as an opt-in fallback. This supersedes D-007's decision to keep description-writing behaviour unchanged.
+- Why: The realistic replay measured V0 at 6/29 hits and 0/10 false loads; V3 reached 16/29 hits and 4.5/10 false loads, with a mean 1.03 memory files opened per run and 36/78 runs opening none. Descriptions alone gained one hit; the instruction gained 8.5. V4 bundling is rejected because it exposed about 125 unrelated topics per repetition. D-010's false-load limit is relaxed because an unnecessary open costs one roughly 600-character file while a miss makes the user re-teach the lesson. The replay measures reads, not correct application, and the original joint recall/precision bar was not met; live benefit is still a hypothesis.
+- Hypothesis: Native skill discovery with V3 increases relevant topic loads and applied votes and reduces repeated teaching without a separate matcher or broad bundled exposure.
+- Metric(s) and how to read them with `pi-memory stats`: Run `pi-memory stats --since 2026-10-29` and compare loaded counts per topic and applied/confirmed votes on topic memories. Track confirmed topic-memory votes relative to known sessions as a re-teach-rate proxy, checking the underlying sessions because confirmation is not proof of a recall failure. Inspect the reported `redescribed` events and their old/new descriptions to date the migration. Selection and injection should stay at zero unless explicitly enabled. Stats cannot establish relevance or causality; audit false loads and whether loaded rules were applied at review.
+- Baseline: D-001's three-week usage baseline and D-005's 3/29 relevant loads in real sessions; V0's 6/29 is the realistic replay baseline, not a production improvement. Evidence: `~/.local/state/pi-skill-memory/evals/2026-10-29-v3-skill-replay/report.md`. The replay uses an imperfect in-sample oracle, two Opus repetitions and read-only early-turn tooling, not a held-out live test.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending live review.
 
 ## Data we keep and why
 
 | File | Decisions supported |
 | --- | --- |
-| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005, D-006, D-007, D-009: the actual rules, examples, descriptions, and scope whose utility we judge. |
+| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005, D-006, D-007, D-009, D-011: the actual rules, examples, descriptions, and scope whose utility we judge. |
 | Memory directory `user.ledger.json`, `memory-skills/<topic>/ledger.json` | D-001, D-002, D-009: rule/example ids and votes, capped baseline fallback and live weights/eviction, not full measurement history. |
 | Memory directory `proposals.md` | D-004: lessons routed to hand-written skills rather than automatic memory writes. |
 | State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005, D-006: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
-| State `history/usage-YYYY-MM.jsonl` | D-002, D-005, D-006: append-only reminded/loaded/selected/injected events with session, timestamp and selector delivery mode, retained even when a topic disappears. |
-| State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004, D-006, D-009: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
+| State `history/usage-YYYY-MM.jsonl` | D-002, D-005, D-006, D-011: append-only reminded/loaded/selected/injected events with session, timestamp and selector delivery mode, retained even when a topic disappears. |
+| State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004, D-006, D-009, D-011: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
 | State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004, D-008, D-009: trigger and branch endpoint, duplicate-vote rejection reasons, each attempted pass-1 result, configured model (or pi default), kept candidates and episodes, dropped candidates/episodes/votes with raw item and reason, accepted votes, and structural/model errors. |
+| State `history/descriptions-YYYY-MM.jsonl` | D-011: `redescribed` events with topic, timestamp and old/new descriptions, dating the migration without rewriting rules or votes. |
 | State `history/examples-YYYY-MM.jsonl` | D-009: persisted example additions with topic, id, session and timestamp, including consolidation copies; retained after eviction. |
 | State `runs.jsonl` | D-001, D-003, D-004, D-008: trigger and completed branch endpoints for incremental processing, writer outcomes and failures; proposal apply records remain separate from writer counts. |
 | State `writer.log` | D-003, D-004, D-006: operational failure context, including silent selector failures and timeouts, such as authentication or model selection errors. |
@@ -159,6 +172,7 @@ Record each change to the extension with its hypothesis, the metric that will ju
 | State `proposals-state.json` | D-004: approval, retry, and failure context for lessons sent to hand-written skills. |
 | State `evals/2026-10-29-model-tiers/` | D-004, D-005: offline model replays and recall audit artifacts, read separately from production stats. |
 | State `evals/2026-10-29-v2-all-tiers/` | D-004, D-005, D-006, D-007: read-only model and description-selection evidence; not production stats. |
+| State `evals/2026-10-29-v3-skill-replay/` | D-010, D-011: read-only realistic skills replay evidence and false-load/collateral-exposure trade-offs; not production stats. |
 | Memory directory `.writer.lock` | D-002: transient serialization of writer mutations, not measurement data. |
 
 History contains lesson text and evidence quotes, so it is sensitive like the source transcripts. No automatic retention or pruning is applied; deleting history reduces future measurement fidelity. Existing lost events cannot be recovered, and legacy session counts are unknown.
@@ -167,4 +181,4 @@ History contains lesson text and evidence quotes, so it is sensitive like the so
 
 - Audit D-008 weekly capture by trigger and same-session duplicate candidates; assess whether sessions with prior writer runs need interrupted-tail recovery.
 - Audit D-009 acceptance precision, example cohort applied votes and budget truncation; assess conservative English matching and consolidation age resets before expanding capture.
-- Audit D-006 selected-to-applied conversion and relevant-session usage before revisiting D-007 descriptions; investigate short-turn misses and false-positive selections.
+- Review D-011 native skill loads, applied/confirmed topic-memory votes and the re-teach-rate proxy on 2026-11-19; audit unnecessary opens and rule application before changing the precision trade-off. Keep D-006 disabled by default and consider the matcher fallback only if the live skills path fails.

@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,7 +8,7 @@ import { countHumanMessages } from "../src/human.ts";
 import { loadProposalState, snooze, updateProposalState } from "../src/proposal-state.ts";
 import { readProposals } from "../src/proposals.ts";
 import { PROPOSALS_WIDGET } from "../src/review.ts";
-import extension, { createExtension, USER_MEMORY_SECTION, type ExtensionDeps } from "../src/index.ts";
+import extension, { createExtension, USER_MEMORY_SECTION, SKILLS_INSTRUCTION, type ExtensionDeps } from "../src/index.ts";
 import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
 import type { ApplyJob, WriterJob } from "../src/writer/job.ts";
@@ -352,7 +352,7 @@ test("user.md is snapshotted at session start and injected identically on every 
     writeFileSync(join(fixture.dir, "user.md"), "Changed mid-session.\n");
   }
   assert.equal(turns[0]!.other, "kept");
-  assert.match(turns[0]![USER_MEMORY_SECTION]!, /Prefer small PRs\.$/);
+  assert.match(turns[0]![USER_MEMORY_SECTION]!, /Prefer small PRs\./);
   assert.equal(turns[0]![USER_MEMORY_SECTION], turns[1]![USER_MEMORY_SECTION]);
 
   const empty = makeFixture([]);
@@ -661,7 +661,7 @@ test("selector never waits for completion and delivers once ready without changi
   const fixture = makeFixture(STANDARD_TOPICS);
   let resolveSelection!: (value: string) => void;
   let prompt = "";
-  const h = harness(fixture, { deps: { select: (input) => {
+  const h = harness(fixture, { memory: { selector: { enabled: true } }, deps: { select: (input) => {
     prompt = input;
     return new Promise((resolve) => { resolveSelection = resolve; });
   } } });
@@ -669,7 +669,7 @@ test("selector never waits for completion and delivers once ready without changi
   await h.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "previous answer" }] } });
   const systemPromptOptions = { sections: {} };
   await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions });
-  assert.deepEqual(systemPromptOptions, { sections: {} });
+  assert.deepEqual(systemPromptOptions, { sections: { [USER_MEMORY_SECTION]: SKILLS_INSTRUCTION } });
   assert.match(prompt, /previous answer/);
   assert.match(prompt, /mem-apollo-state/);
   assert.doesNotMatch(prompt, /mem-billing-db/);
@@ -686,7 +686,7 @@ test("selector never waits for completion and delivers once ready without changi
 test("selector filters touched and named repos, loaded topics and clears deduplication after compaction", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
   const prompts: string[] = [];
-  const h = harness(fixture, { memory: { reminders: false }, deps: { select: async (prompt) => {
+  const h = harness(fixture, { memory: { reminders: false, selector: { enabled: true } }, deps: { select: async (prompt) => {
     prompts.push(prompt);
     return '["mem-billing-db"]';
   } } });
@@ -709,7 +709,7 @@ test("late selections are discarded after end, replacement, compaction and timeo
     const fixture = makeFixture(STANDARD_TOPICS);
     let finish!: (value: string) => void;
     let signal!: AbortSignal;
-    const h = harness(fixture, { memory: { selector: { timeoutMs: 5 } }, deps: { select: (_prompt, _ctx, _config, abort) => {
+    const h = harness(fixture, { memory: { selector: { enabled: true, timeoutMs: 5 } }, deps: { select: (_prompt, _ctx, _config, abort) => {
       signal = abort;
       return new Promise((resolve) => { finish = resolve; });
     } } });
@@ -726,7 +726,7 @@ test("late selections are discarded after end, replacement, compaction and timeo
 
 test("selector point mode names files without rules and disabled selector never invokes a model", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
-  const h = harness(fixture, { memory: { selector: { mode: "point" } }, deps: { select: async () => '["mem-apollo-state"]' } });
+  const h = harness(fixture, { memory: { selector: { enabled: true, mode: "point" } }, deps: { select: async () => '["mem-apollo-state"]' } });
   await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
   const result = await h.fire("context", { messages: [] }) as { messages: { content: string }[] };
   assert.match(result.messages[0].content, /Read .*SKILL.md before acting/);
@@ -741,7 +741,7 @@ test("selector point mode names files without rules and disabled selector never 
 test("selector bounds injected context and silently rejects malformed model answers", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
   let output = '["mem-apollo-state","mem-apollo-abstractions"]';
-  const h = harness(fixture, { memory: { selector: { maxChars: 170 } }, deps: { select: async () => output } });
+  const h = harness(fixture, { memory: { selector: { enabled: true, maxChars: 170 } }, deps: { select: async () => output } });
   await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
   const result = await h.fire("context", { messages: [] }) as { messages: { content: string }[] };
   assert.ok(result.messages[0].content.length <= 170);
@@ -757,7 +757,7 @@ test("selector bounds injected context and silently rejects malformed model answ
 test("a skill read while selection runs suppresses its rule injection", async () => {
   const fixture = makeFixture(STANDARD_TOPICS);
   let finish!: (value: string) => void;
-  const h = harness(fixture, { deps: { select: () => new Promise((resolve) => { finish = resolve; }) } });
+  const h = harness(fixture, { memory: { selector: { enabled: true } }, deps: { select: () => new Promise((resolve) => { finish = resolve; }) } });
   await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
   await h.toolRound("read-memory", "read", { path: topicSkillPath(fixture.dir, "mem-apollo-state") });
   finish('["mem-apollo-state"]');
@@ -818,4 +818,25 @@ test("interactive startup recovers in the background but resume, non-UI and skip
   await skipped.fire("session_start", { reason: "startup" });
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(skipped.jobs.length, 0);
+});
+
+test("V3 instruction is frozen with empty user.md across turns and compaction", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  writeFileSync(join(fixture.dir, "user.md"), "\n");
+  const h = harness(fixture, { deps: { select: async () => { assert.fail("default selector ran"); } } });
+  await h.fire("session_start", { reason: "startup" });
+  const expected = "Before acting on a request, scan the mem-* skills and read every one whose description matches the request; they hold the user's corrections.";
+  for (const prompt of ["first", "after compaction"]) {
+    const systemPromptOptions = { sections: {} as Record<string, string> };
+    await h.fire("before_agent_start", { prompt, systemPromptOptions });
+    assert.equal(systemPromptOptions.sections[USER_MEMORY_SECTION], expected);
+    writeFileSync(join(fixture.dir, "user.md"), "Changed mid-session.");
+    rmSync(join(fixture.dir, "memory-skills"), { recursive: true, force: true });
+    await h.fire("resources_discover", { cwd: "/work/apollo", reason: "reload" });
+    await h.fire("session_compact", {});
+  }
+  const disabled = harness(fixture, { memory: { skillsInstruction: false } });
+  const systemPromptOptions = { sections: {} as Record<string, string> };
+  await disabled.fire("before_agent_start", { prompt: "hi", systemPromptOptions });
+  assert.equal(systemPromptOptions.sections[USER_MEMORY_SECTION], "What this user wants from agents in every repository (pi-skill-memory user.md):\n\nChanged mid-session.");
 });

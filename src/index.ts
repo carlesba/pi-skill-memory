@@ -1,3 +1,4 @@
+import { parseRedescribeArgs, redescribe } from "./writer/redescribe.ts";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { CONFIG_ENV } from "./cli.ts";
@@ -63,7 +64,7 @@ export const USER_MEMORY_HEADING = "What this user wants from agents in every re
 export const REMINDER_MESSAGE_TYPE = "pi-skill-memory-reminder";
 export const COMMAND_NAME = "memory";
 export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
-export const SUBCOMMANDS = ["status", "explain", "write", "stats"] as const;
+export const SUBCOMMANDS = ["status", "explain", "write", "stats", "redescribe"] as const;
 export const PROPOSALS_COMMAND = "proposals";
 
 export interface ExtensionDeps {
@@ -82,6 +83,7 @@ interface SessionState {
   config: MemoryConfig;
   sessionId: string;
   userMemory: string | null;
+  skillsInstruction: boolean;
   topics: TopicSummary[];
   repos: Set<string>;
   selection?: { controller: AbortController; ready: TopicSummary[]; timer: ReturnType<typeof setTimeout> };
@@ -113,8 +115,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function userMemorySection(snapshot: string): string {
-  return `${USER_MEMORY_HEADING}\n\n${snapshot}`;
+export const SKILLS_INSTRUCTION = "Before acting on a request, scan the mem-* skills and read every one whose description matches the request; they hold the user's corrections.";
+
+export function userMemorySection(snapshot: string, skillsInstruction = false): string {
+  return [snapshot ? `${USER_MEMORY_HEADING}\n\n${snapshot}` : "", skillsInstruction ? SKILLS_INSTRUCTION : ""].filter(Boolean).join("\n\n");
 }
 
 export function runReviewApp(config: MemoryConfig, ctx: ExtensionCommandContext): Promise<number> {
@@ -152,11 +156,13 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     function startSession(ctx: SessionView): SessionState {
       const config = resolveConfig(pi.getSettings(), { env: deps.env, home: deps.home });
       cancelSelection();
+      const topics = listTopics(config.dir);
       state = {
         config,
         sessionId: ctx.sessionManager.getSessionId(),
         userMemory: readUserMemory(config.dir),
-        topics: listTopics(config.dir),
+        topics,
+        skillsInstruction: config.skillsInstruction && topics.length > 0,
         repos: new Set(),
         previousAssistant: ctx.sessionManager.getBranch().flatMap((entry) =>
           entry.type === "message" && entry.message.role === "assistant" ? [messageText(entry.message.content)] : []).at(-1)?.slice(-2000) ?? "",
@@ -500,10 +506,11 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       try {
         const session = current(ctx);
         beginSelection(session, event.prompt, ctx);
-        if (session.userMemory) {
+        const skillsInstruction = session.skillsInstruction;
+        if (session.userMemory || skillsInstruction) {
           event.systemPromptOptions.sections = {
             ...event.systemPromptOptions.sections,
-            [USER_MEMORY_SECTION]: userMemorySection(session.userMemory),
+            [USER_MEMORY_SECTION]: userMemorySection(session.userMemory ?? "", skillsInstruction),
           };
         }
         const lines: string[] = [];
@@ -626,7 +633,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     }
 
     pi.registerCommand(COMMAND_NAME, {
-      description: "Memory skills: status, explain, write",
+      description: "Memory skills: status, explain, write, stats, redescribe",
       getArgumentCompletions: (prefix) => {
         const items = SUBCOMMANDS.filter((name) => name.startsWith(prefix.trim())).map((name) => ({ value: name, label: name }));
         return items.length > 0 ? items : null;
@@ -637,12 +644,13 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
           const session = current(ctx);
           if (subcommand === "status") runStatus(session, ctx);
           else if (subcommand === "stats") notify(ctx, formatStats(session.config, parseStatsArgs(args.trim().split(/\s+/).slice(1))));
+          else if (subcommand === "redescribe") notify(ctx, await redescribe(session.config, parseRedescribeArgs(args.trim().split(/\s+/).slice(1))));
           else if (subcommand === "explain") notify(ctx, formatExplain(listed, session.reminders));
           else if (subcommand === "write") runWrite(session, ctx);
           else {
             notify(
               ctx,
-              `Unknown subcommand "${subcommand}". Use /memory status, /memory stats, /memory explain or /memory write; review proposals with /proposals.`,
+              `Unknown subcommand "${subcommand}". Use /memory status, /memory stats, /memory explain, /memory redescribe or /memory write; review proposals with /proposals.`,
               "warning",
             );
           }

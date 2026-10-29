@@ -24,7 +24,7 @@ Set `target` to one of:
 
 - `user.md` only when the lesson holds in every repository.
 - The `name` of an existing topic when the lesson belongs to the moment its description names. Prefer this.
-- `new:<topic-slug>` only when no existing description fits without stretching. A topic is one trigger moment ("when changing state management in preply/apollo", "when writing React components in any repo"), never a broad subject. The slug uses only `a-z`, `0-9` and `-`, names the moment (`state-management`, `react-components`), and never repeats the scope or the `mem-` prefix.
+- `new:<topic-slug>` only when no existing description fits without stretching. Name the concrete action and artifacts in the words a user would type in a request, plus the repo when scoped; cover common request phrasings rather than describing the lesson or when it was learned. A topic is one trigger moment ("when changing state management in preply/apollo", "when writing React components in any repo"), never a broad subject. The slug uses only `a-z`, `0-9` and `-`, names the moment (`state-management`, `react-components`), and never repeats the scope or the `mem-` prefix.
 - `proposal:<skill>` when the lesson belongs in a hand-written skill. Never edit those skills. A proposal goes to a file the human reviews. `<skill>` must be a name from the hand-written skill index.
 
 Set `scope` to `repo:<owner>/<name>` when the lesson names that repo's code, structure or conventions. Set it to `generic` when the user stated it generally or it was seen in two or more repos. Use only repos from the list of repos this session touched.

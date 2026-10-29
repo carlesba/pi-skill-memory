@@ -1,3 +1,4 @@
+import { parseRedescribeArgs, redescribe } from "./writer/redescribe.ts";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -258,6 +259,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
   const [command, id] = argv;
   const { config } = deps;
   try {
+    if (command === "redescribe") return { stdout: `${await redescribe(config, parseRedescribeArgs(argv.slice(1)))}\n`, code: 0 };
     if (command === "stats") return { stdout: `${formatStats(config, parseStatsArgs(argv.slice(1)))}\n`, code: 0 };
     if (command === "list") return { stdout: listLines(config, deps.now()).map((line) => `${line}\n`).join(""), code: 0 };
     if (command === "show") {
@@ -271,7 +273,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
       if (!deps.which("fzf")) return { stdout: "pi-memory review needs fzf on PATH (brew install fzf).\n", code: 1 };
       return { stdout: `${await review(deps)}\n`, code: 0 };
     }
-    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit|stats] [id or --since YYYY-MM-DD]\n", code: 2 };
+    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit|stats|redescribe] [id or --since YYYY-MM-DD]\n       pi-memory redescribe [--dry-run] [--topic <name>]\n", code: 2 };
   } catch (error) {
     return { stdout: `${errorMessage(error)}\n`, code: 1 };
   }

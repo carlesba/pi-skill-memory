@@ -184,3 +184,17 @@ test("stats runs without review dependencies and reports invalid date arguments"
   assert.equal(invalid.code, 1);
   assert.match(invalid.stdout, /usage: stats/);
 });
+
+test("redescribe CLI is noninteractive and reports argument errors", async () => {
+  const { deps, fzfRuns, jobs } = fixture({ fzf: false });
+  const preview = await runCli(["redescribe", "--dry-run"], deps);
+  assert.equal(preview.code, 0);
+  assert.match(preview.stdout, /Topic \| Before \| After/);
+  assert.match(preview.stdout, /Dry run: no descriptions written/);
+  const invalid = await runCli(["redescribe", "--topic"], deps);
+  assert.equal(invalid.code, 1);
+  assert.equal(invalid.stdout, "usage: pi-memory redescribe [--dry-run] [--topic <name>]\n");
+  assert.equal((await runCli(["redescribe", "--topic", "missing"], deps)).code, 1);
+  assert.deepEqual(fzfRuns, []);
+  assert.deepEqual(jobs, []);
+});

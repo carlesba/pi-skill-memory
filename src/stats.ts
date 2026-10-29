@@ -55,6 +55,7 @@ function table(rows: string[][]): string {
 export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, since?: string): string {
   const inWindow = (ts: unknown): boolean => typeof ts === "string" && Number.isFinite(Date.parse(ts)) && (!since || ts >= since);
   const usage = readHistory(config.stateDir, "usage");
+  const redescribed = readHistory(config.stateDir, "descriptions").filter((event) => inWindow(event.ts) && event.kind === "redescribed");
   const votes = readHistory(config.stateDir, "votes");
   const extractions = readHistory(config.stateDir, "extractions").filter((event) => inWindow(event.ts));
   const runs = readJsonLines(join(config.stateDir, "runs.jsonl"))
@@ -143,6 +144,8 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
     `Sources: history + pending usage; ${legacy.length} ledger-only events (capped, incomplete history).`,
     "", table(rows), "", `Topics never loaded in window: ${neverLoaded.length ? neverLoaded.join(", ") : "none"}`,
     `Selected topic/session pairs later applied: ${appliedSelections}/${selectedPairs.size} (same session, at or after selection)`,
+    `Redescribed events: ${redescribed.length}`,
+    ...redescribed.map((event) => `Redescribed ${String(event.topic)}: ${String(event.oldDescription)} → ${String(event.newDescription)}`),
     "", "Writer runs by outcome:",
     outcomes.size ? table([["outcome", "runs"], ...[...outcomes].sort().map(([kind, count]) => [kind, String(count)])]) : "none",
     `Pass-1 validation failures: ${runs.filter((run) => typeof run.error === "string" && run.error.startsWith("pass 1 rejected:")).length}`,
