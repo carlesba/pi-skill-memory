@@ -44,20 +44,33 @@ test("pass 1 accepts every target form and drops votes on unknown ids", () => {
   assert.ok(validateExtract({}, context).ok);
 });
 
-test("pass 1 rejects oversized or malformed output", () => {
-  const cases: unknown[] = [
-    [],
-    { candidates: Array.from({ length: 21 }, () => candidate()) },
-    { candidates: [candidate({ rule: "x".repeat(401) })] },
-    { candidates: [candidate({ why: "x".repeat(301) })] },
-    { candidates: [candidate({ evidence: Array.from({ length: 21 }, () => "w").join(" ") })] },
-    { candidates: [candidate({ scope: "repo:acme" })] },
-    { candidates: [candidate({ target: "mem-missing" })] },
-    { candidates: [candidate({ target: "new:../escape" })] },
-    { candidates: [candidate({ target: "proposal:unknown" })] },
-    { votes: [{ topic: "mem-any-testing", id: "r1", kind: "liked" }] },
+test("pass 1 rejects only structurally unusable output", () => {
+  for (const value of [[], null, { candidates: "bad" }, { votes: {} }, { candidates: null }, { votes: null }]) {
+    assert.equal(validateExtract(value, context).ok, false);
+  }
+});
+
+test("pass 1 preserves valid candidates and votes while recording each invalid item", () => {
+  const invalid = [
+    candidate({ rule: "x".repeat(401) }), candidate({ why: "x".repeat(301) }),
+    candidate({ evidence: "w ".repeat(21) }), candidate({ evidence: "" }),
+    candidate({ scope: "repo:acme" }), candidate({ target: "mem-missing" }),
+    candidate({ target: "new:../escape" }), candidate({ target: "proposal:unknown" }), null,
   ];
-  for (const value of cases) assert.equal(validateExtract(value, context).ok, false, JSON.stringify(value).slice(0, 80));
+  const result = validateExtract({ candidates: [...invalid, candidate()], votes: [
+    null, { topic: "mem-any-testing", id: "r1", kind: "liked" },
+    { topic: "mem-any-testing", id: "r1", kind: "applied" },
+  ] }, context);
+  assert.ok(result.ok);
+  assert.equal(result.candidates.length, 1);
+  assert.deepEqual(result.votes, [{ topic: "mem-any-testing", id: "r1", kind: "applied" }]);
+  assert.equal(result.rejected.length, 11);
+  assert.match(result.rejected[2]!.reason, /longer than 20 words/);
+  assert.match(result.rejected[3]!.reason, /evidence is empty/);
+  const capped = validateExtract({ candidates: Array.from({ length: 21 }, () => candidate()) }, context);
+  assert.ok(capped.ok);
+  assert.equal(capped.candidates.length, 20);
+  assert.equal(capped.rejected.length, 1);
 });
 
 test("pass 2 rejects unknown ids, oversized bodies, headings and untagged paragraphs", () => {

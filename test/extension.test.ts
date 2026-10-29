@@ -287,7 +287,7 @@ test("reading a memory SKILL.md records one loaded event per topic and never tri
   assert.equal(await h.toolRound("t1", "read", { path }), undefined);
   assert.equal(await h.toolRound("t2", "read", { path }), undefined);
   assert.equal(await h.toolRound("t3", "write", { path: topicSkillPath(fixture.dir, "mem-billing-db") }), undefined);
-  assert.deepEqual(readUsageEvents(fixture.stateDir), [
+  assert.deepEqual(readUsageEvents(fixture.stateDir).map(({ eventId, ...event }) => event), [
     { ts: "2025-03-01T12:00:00.000Z", kind: "loaded", topic: "mem-apollo-state", session: "sess-1" },
   ]);
 });
@@ -642,4 +642,13 @@ test("RPC clients review through select and editor dialogs, and print mode lists
   const listing = await plain.proposals({ ...plain.ctx("/work/apollo", "print"), hasUI: false });
   assert.match(listing, /^3 memory proposals pending/);
   assert.match(listing, /react-code: Return hook output as one object/);
+});
+
+test("/memory stats reports the selected window without queuing a writer", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const h = harness(fixture);
+  await h.fire("session_start", { reason: "startup" });
+  assert.match(await h.command("stats --since 2026-10-29"), /Memory stats \(since 2026-10-29, UTC inclusive\)/);
+  assert.match(await h.command("stats --since 2026-02-30"), /usage: stats/);
+  assert.deepEqual(h.jobs, []);
 });

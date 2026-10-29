@@ -13,6 +13,7 @@ import {
   sweepLedger,
   type Ledger,
 } from "../ledger.ts";
+import { appendHistory, type ExtractionEvent } from "../history.ts";
 import type { RepoResolver } from "../repo.ts";
 import { readSkillIndex, skillIndexRoots } from "../skill-index.ts";
 import {
@@ -311,6 +312,10 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     loadPrompt("extract", packageRoot),
   );
 
+  const extraction: ExtractionEvent = {
+    session: sessionId, ts: now.toISOString(), model: config.writerModel ?? "pi default",
+    candidates: [], dropped: [], votes: [],
+  };
   let pass1: ReturnType<typeof validateExtract>;
   try {
     pass1 = validateExtract(extractJson(await deps.model(extractPrompt)), {
@@ -322,18 +327,32 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       },
     });
   } catch (error) {
+    extraction.error = errorMessage(error);
+    appendHistory(config.stateDir, "extractions", extraction);
     log(`pass 1 failed: ${errorMessage(error)}`);
     return finish("failed", `pass 1: ${errorMessage(error)}`);
   }
   if (!pass1.ok) {
+    extraction.error = pass1.error;
+    appendHistory(config.stateDir, "extractions", extraction);
     log(`pass 1 rejected: ${pass1.error}`);
     return finish("failed", `pass 1 rejected: ${pass1.error}`);
   }
-  for (const vote of pass1.dropped) log(`dropped vote on unknown memory ${vote}`);
+  extraction.candidates = pass1.candidates;
+  extraction.votes = pass1.votes;
+  extraction.dropped = pass1.rejected;
+  appendHistory(config.stateDir, "extractions", extraction);
+  for (const item of pass1.rejected) {
+    rejected.push(item.reason);
+    log(`dropped ${item.type}: ${item.reason}`);
+  }
 
   for (const vote of pass1.votes) {
     const topic = topics.get(vote.topic);
     const holder: MemoryHolder = vote.topic === USER_FILE ? userMemory : topic!;
+    if (holder.ledger.memories[vote.id]) {
+      appendHistory(config.stateDir, "votes", { ...vote, session: sessionId, ts: now.toISOString() });
+    }
     const outcome = recordVote(holder.ledger, vote.id, vote.kind, now);
     if (outcome === "unknown") {
       log(`dropped vote on unknown memory ${vote.topic}#${vote.id}`);

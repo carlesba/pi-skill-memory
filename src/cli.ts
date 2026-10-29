@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { homedir, tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { formatStats, parseStatsArgs } from "./commands.ts";
 import { resolveAgentDir, resolveConfig, type MemoryConfig } from "./config.ts";
 import { loadProposalState, markApplying, needsAttention, snooze, updateNote, updateProposalState, type ProposalState } from "./proposal-state.ts";
 import { discardProposal, readProposals, type Proposal } from "./proposals.ts";
@@ -257,6 +258,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
   const [command, id] = argv;
   const { config } = deps;
   try {
+    if (command === "stats") return { stdout: `${formatStats(config, parseStatsArgs(argv.slice(1)))}\n`, code: 0 };
     if (command === "list") return { stdout: listLines(config, deps.now()).map((line) => `${line}\n`).join(""), code: 0 };
     if (command === "show") {
       const proposal = findProposal(config, id);
@@ -269,7 +271,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
       if (!deps.which("fzf")) return { stdout: "pi-memory review needs fzf on PATH (brew install fzf).\n", code: 1 };
       return { stdout: `${await review(deps)}\n`, code: 0 };
     }
-    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit] [id]\n", code: 2 };
+    return { stdout: "usage: pi-memory [review|list|show|apply|comment|discard|omit|stats] [id or --since YYYY-MM-DD]\n", code: 2 };
   } catch (error) {
     return { stdout: `${errorMessage(error)}\n`, code: 1 };
   }

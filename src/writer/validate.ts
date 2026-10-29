@@ -1,3 +1,4 @@
+import type { DroppedExtractionItem } from "../history.ts";
 import { parseFrontmatter } from "../frontmatter.ts";
 import { MEMORY_VOTE_KINDS, type MemoryVoteKind } from "../ledger.ts";
 import { parseMemories, parseScope, slugify, type Memory, type Scope } from "../topics.ts";
@@ -48,6 +49,7 @@ export interface ExtractResult {
   candidates: Candidate[];
   votes: MemoryVote[];
   dropped: string[];
+  rejected: DroppedExtractionItem[];
 }
 
 export interface MergeResult {
@@ -130,27 +132,41 @@ function runValidation<T>(validate: () => T): Validated<T> {
 export function validateExtract(value: unknown, context: ExtractContext): Validated<ExtractResult> {
   return runValidation(() => {
     if (!isRecord(value)) reject("pass 1 output must be an object");
-    const rawCandidates = value.candidates ?? [];
-    const rawVotes = value.votes ?? [];
+    const rawCandidates = value.candidates === undefined ? [] : value.candidates;
+    const rawVotes = value.votes === undefined ? [] : value.votes;
     if (!Array.isArray(rawCandidates)) reject("candidates must be an array");
     if (!Array.isArray(rawVotes)) reject("votes must be an array");
-    if (rawCandidates.length > MAX_CANDIDATES) reject(`more than ${MAX_CANDIDATES} candidates`);
-    const candidates = rawCandidates.map((candidate, index) => parseCandidate(candidate, index, context));
+    const candidates: Candidate[] = [];
     const votes: MemoryVote[] = [];
     const dropped: string[] = [];
+    const rejected: DroppedExtractionItem[] = [];
+    rawCandidates.forEach((candidate, index) => {
+      try {
+        if (index >= MAX_CANDIDATES) reject(`candidates[${index}] exceeds the ${MAX_CANDIDATES} candidate limit`);
+        candidates.push(parseCandidate(candidate, index, context));
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        rejected.push({ type: "candidate", index, reason: error.message, value: candidate });
+      }
+    });
     rawVotes.forEach((vote, index) => {
       const where = `votes[${index}]`;
-      if (!isRecord(vote)) reject(`${where} must be an object`);
-      if (typeof vote.id !== "string" || typeof vote.topic !== "string") reject(`${where} needs a topic and an id`);
-      if (!MEMORY_VOTE_KINDS.includes(vote.kind as MemoryVoteKind)) reject(`${where}.kind is not a vote kind`);
-      const ids = context.memoryIdsOf(vote.topic);
-      if (!ids || !ids.has(vote.id)) {
-        dropped.push(`${vote.topic}#${vote.id}`);
-        return;
+      try {
+        if (!isRecord(vote)) reject(`${where} must be an object`);
+        if (typeof vote.id !== "string" || typeof vote.topic !== "string") reject(`${where} needs a topic and an id`);
+        if (!MEMORY_VOTE_KINDS.includes(vote.kind as MemoryVoteKind)) reject(`${where}.kind is not a vote kind`);
+        const ids = context.memoryIdsOf(vote.topic);
+        if (!ids || !ids.has(vote.id)) {
+          dropped.push(`${vote.topic}#${vote.id}`);
+          reject(`${where} names an unknown memory: ${vote.topic}#${vote.id}`);
+        }
+        votes.push({ topic: vote.topic, id: vote.id, kind: vote.kind as MemoryVoteKind });
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        rejected.push({ type: "vote", index, reason: error.message, value: vote });
       }
-      votes.push({ topic: vote.topic, id: vote.id, kind: vote.kind as MemoryVoteKind });
     });
-    return { candidates, votes, dropped };
+    return { candidates, votes, dropped, rejected };
   });
 }
 

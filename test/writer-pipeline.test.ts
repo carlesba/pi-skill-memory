@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { readHistory } from "../src/history.ts";
 import { resolveConfig, type MemoryConfig } from "../src/config.ts";
 import { emptyLedger, isoDate, loadLedger, saveLedger, type Ledger } from "../src/ledger.ts";
 import { parseTopic, serializeTopic, topicLedgerPath, topicSkillPath, type Memory, type Scope } from "../src/topics.ts";
@@ -200,7 +201,7 @@ test("end to end: creates a topic with minted ids, applies votes, sweeps, remove
     r1: { source: "sess-1", origin: "human", learned: "2025-03-01", votes: [] },
   });
   assert.match(readFileSync(join(fixture.dir, "proposals.md"), "utf8"), /^## 2025-03-01 proposal:git\n\n- Rule: Rebase before pushing\./);
-  assert.match(readFileSync(join(fixture.config.stateDir, "writer.log"), "utf8"), /dropped vote on unknown memory mem-any-testing#r99/);
+  assert.match(readFileSync(join(fixture.config.stateDir, "writer.log"), "utf8"), /dropped vote: votes\[2\] names an unknown memory: mem-any-testing#r99/);
 
   const message = git(fixture.dir, "log", "-1", "--format=%B");
   assert.match(message, /^memory: update mem-any-old-notes, mem-any-react-components, mem-any-testing, user\.md/);
@@ -481,4 +482,56 @@ test("a user.md with unmarked paragraphs and no ledger gets ids adopted instead 
   assert.equal(ledger.nextId, 6);
   assert.deepEqual(ledger.memories.r4, { source: "", origin: "human", learned: "", votes: [] });
   assert.deepEqual(ledger.memories.r5!.votes.map((vote) => vote.kind), ["applied"]);
+});
+
+
+test("invalid pass-1 items do not discard valid lessons or votes and all outcomes are archived", async () => {
+  const fixture = setup({ autoCommit: false, writerModel: "test/model" });
+  const candidate = { rule: "Use node:test.", why: "User preference.", evidence: "use node:test", scope: "generic", target: "mem-any-testing" };
+  const { model } = scriptedModel({
+    extract: { candidates: [{ ...candidate, evidence: "" }, candidate, { ...candidate, evidence: "word ".repeat(21) }], votes: [
+      { topic: "mem-any-testing", id: "r1", kind: "applied" },
+      { topic: "mem-any-testing", id: "r2", kind: "retracted" },
+      { topic: "mem-any-testing", id: "r1", kind: "invalid" },
+    ] },
+    merges: { "mem-any-testing": { description: "When testing.", body: "Use node:test. ^r1\n\nPrefer behavior tests. ^new", removed: [] } },
+  });
+  const result = await runPipeline(job(fixture), { model, now: () => NOW, home: fixture.root });
+  assert.equal(result.outcome, "ok");
+  assert.equal(result.rejected.length, 3);
+  const ledger = loadLedger(topicLedgerPath(fixture.dir, "mem-any-testing"));
+  assert.equal(ledger.memories.r1!.votes[0]!.kind, "applied");
+  assert.equal(ledger.memories.r2, undefined);
+  assert.match(readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8"), /Prefer behavior tests/);
+  const extraction = readHistory(fixture.config.stateDir, "extractions")[0]!;
+  assert.equal(extraction.model, "test/model");
+  assert.equal((extraction.candidates as unknown[]).length, 1);
+  assert.equal((extraction.dropped as unknown[]).length, 3);
+  assert.deepEqual(readHistory(fixture.config.stateDir, "votes").map(({ topic, id, kind, session, ts }) => ({ topic, id, kind, session, ts })), [
+    { topic: "mem-any-testing", id: "r1", kind: "applied", session: "sess-1", ts: NOW.toISOString() },
+    { topic: "mem-any-testing", id: "r2", kind: "retracted", session: "sess-1", ts: NOW.toISOString() },
+  ]);
+});
+
+test("unusable pass-1 answers fail and retain an extraction error record", async () => {
+  for (const answer of ["not json", JSON.stringify({ candidates: "bad" })]) {
+    const fixture = setup({ autoCommit: false });
+    const result = await runPipeline(job(fixture), { model: async () => answer, now: () => NOW, home: fixture.root });
+    assert.equal(result.outcome, "failed");
+    assert.equal(readHistory(fixture.config.stateDir, "extractions").length, 1);
+    assert.ok(readHistory(fixture.config.stateDir, "extractions")[0]!.error);
+    assert.equal(readHistory(fixture.config.stateDir, "votes").length, 0);
+  }
+});
+
+test("vote and extraction history outlive ledger caps", async () => {
+  const fixture = setup({ autoCommit: false });
+  const { model } = scriptedModel({ extract: { candidates: [], votes: [{ topic: "mem-any-testing", id: "r1", kind: "applied" }] }, merges: {} });
+  for (let index = 0; index < 25; index++) {
+    const result = await runPipeline(job(fixture, { sessionId: `session-${index}` }), { model, now: () => NOW, home: fixture.root });
+    assert.equal(result.outcome, "ok");
+  }
+  assert.equal(loadLedger(topicLedgerPath(fixture.dir, "mem-any-testing")).memories.r1!.votes.length, 20);
+  assert.equal(readHistory(fixture.config.stateDir, "votes").length, 25);
+  assert.equal(readHistory(fixture.config.stateDir, "extractions").length, 25);
 });

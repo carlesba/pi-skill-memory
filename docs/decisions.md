@@ -1,0 +1,101 @@
+# Decisions
+
+Record each change to the extension with its hypothesis, the metric that will judge it, its baseline, and a review date. At review, compare against the recorded data rather than impressions; fill the outcome without rewriting the original hypothesis. The success criterion is that memories are used in future sessions: applied votes and loads in relevant sessions, with fewer confirmed votes that mean the user had to teach the lesson again. Counts alone cannot establish relevance; recall audits supply that context.
+
+## Entry template
+
+- ID:
+- Date:
+- Decision:
+- Why:
+- Hypothesis:
+- Metric(s) and how to read them with `pi-memory stats`:
+- Baseline:
+- Review on:
+- Outcome (filled at review):
+
+## D-001
+
+- ID: D-001
+- Date: 2026-10-29
+- Decision: Record the baseline before changing measurement or extraction validation.
+- Why: Capped ledgers were the only surviving source of usage and votes.
+- Hypothesis: Memory earns its prompt and writer cost when it is used in later relevant sessions, not merely reminded or written.
+- Metric(s) and how to read them with `pi-memory stats`: Compare loaded and applied counts with reminded and confirmed counts, using `pi-memory stats --since 2026-10-09`. This command cannot reconstruct events already lost before history existed or identify relevant sessions on its own.
+- Baseline: Three weeks since 2026-10-09, measured from capped ledgers: 25 topics; 9 loaded at least once; 12 topic loads total; 12 topics reminded at least 19 times with 0–1 loads; repo topics approximately 250 reminders versus 7 loads; 1 vote on topic memories total. `user.md` held 18 memories with 57 applied, 11 confirmed, 5 ignored, and 1 contradicted. Writer runs: 104 total, 71 ok, 14 nothing, 2 skipped, 17 failed. Failures: 3 expired SSO token, 8 apply-model “No models match”, 4 pass-1 validation rejects that lost the whole run, 1 invalid JSON, and 1 other. These supplied baseline figures include apply-model failures; current stats deliberately separates writer runs from proposal apply runs.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending.
+
+## D-002
+
+- ID: D-002
+- Date: 2026-10-29
+- Decision: Keep full usage, vote, and extraction history and add read-only stats in pi and the CLI.
+- Why: Usage folding deleted its source log and capped ledgers discarded older events and removed memories.
+- Hypothesis: Durable events let later decisions compare actual use across time windows without the ledger cap distorting trends.
+- Metric(s) and how to read them with `pi-memory stats`: Run `pi-memory stats --since 2026-10-29` for known sessions, per-topic reminders, loads and votes, user votes, writer outcomes, and candidate-drop reasons. Confirm that history retains events beyond 20 while ledgers remain capped.
+- Baseline: D-001; no durable usage, vote, or extraction history.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending.
+
+## D-003
+
+- ID: D-003
+- Date: 2026-10-29
+- Decision: Drop invalid pass-1 candidates and votes individually, preserving valid siblings.
+- Why: An empty or overlong evidence quote discarded every candidate and vote in the run.
+- Hypothesis: Item-level validation preserves useful lessons without relaxing the validity rules for an accepted lesson.
+- Metric(s) and how to read them with `pi-memory stats`: In `pi-memory stats --since 2026-10-29`, item-caused pass-1 validation failures should reach zero; inspect candidates dropped by reason to see what still needs prompt work. Structurally unusable answers can still fail the pass.
+- Baseline: 4 whole-run pass-1 validation rejects in the 104-run baseline.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending.
+
+## D-004 — PENDING
+
+- ID: D-004
+- Date: 2026-10-29
+- Decision: Pending writer model tier evaluation; no model change decided.
+- Why: Evaluate cost and extraction quality before changing the writer model.
+- Hypothesis: A faster tier may preserve useful lessons at lower cost.
+- Metric(s) and how to read them with `pi-memory stats`: Offline replay of 20 sessions across fast/mid/smart; results in `~/.local/state/pi-skill-memory/evals/2026-10-29-model-tiers/`. Use stats writer outcomes and candidate-drop reasons as production context; stats does not score replay quality or costs by model.
+- Baseline: D-001 plus the offline replay results when available.
+- Review on: 2026-11-19
+- Outcome (filled at review): pending
+
+## D-005 — PENDING
+
+- ID: D-005
+- Date: 2026-10-29
+- Decision: Pending recall audit; no recall change decided.
+- Why: Determine whether topic skills load when relevant, rather than optimizing reminder counts alone.
+- Hypothesis: Missed relevant loads explain some repeated teaching.
+- Metric(s) and how to read them with `pi-memory stats`: Compare reminded and loaded columns and topics never loaded with relevance judgments in the recall audit in `~/.local/state/pi-skill-memory/evals/2026-10-29-model-tiers/`. Stats counts events, not relevance.
+- Baseline: D-001, especially 12 topics with at least 19 reminders and 0–1 loads.
+- Review on: 2026-11-19
+- Outcome (filled at review): pending
+
+## Data we keep and why
+
+| File | Decisions supported |
+| --- | --- |
+| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005: the actual memories, descriptions, and scope whose utility we judge. |
+| Memory directory `user.ledger.json`, `memory-skills/<topic>/ledger.json` | D-001, D-002: capped baseline fallback and live weights/eviction, not full measurement history. |
+| Memory directory `proposals.md` | D-004: lessons routed to hand-written skills rather than automatic memory writes. |
+| State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
+| State `history/usage-YYYY-MM.jsonl` | D-002, D-005: append-only reminded/loaded events with session and timestamp, retained even when a topic disappears. |
+| State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
+| State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004: each attempted pass-1 result, configured model (or pi default), kept candidates, dropped candidates/votes with raw item and reason, accepted votes, and structural/model errors. |
+| State `runs.jsonl` | D-001, D-003, D-004: writer outcomes and failures; proposal apply records remain separate from writer counts. |
+| State `writer.log` | D-003, D-004: operational failure context, such as authentication or model selection errors. |
+| State `jobs/*.json` | D-004: queued/retryable inputs for operational diagnosis, not a permanent outcome history. |
+| State `proposals-state.json` | D-004: approval, retry, and failure context for lessons sent to hand-written skills. |
+| State `evals/2026-10-29-model-tiers/` | D-004, D-005: offline model replays and recall audit artifacts, read separately from production stats. |
+| Memory directory `.writer.lock` | D-002: transient serialization of writer mutations, not measurement data. |
+
+History contains lesson text and evidence quotes, so it is sensitive like the source transcripts. No automatic retention or pruning is applied; deleting history reduces future measurement fidelity. Existing lost events cannot be recovered, and legacy session counts are unknown.
+
+## Planned next — not decided
+
+- Before-compaction flush.
+- Episodic `## Examples` in topics.
+- Recall changes depending on D-005.

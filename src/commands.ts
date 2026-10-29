@@ -1,3 +1,4 @@
+export { formatStats, parseStatsArgs } from "./stats.ts";
 import type { MemoryConfig } from "./config.ts";
 import type { TopicSummary } from "./topics.ts";
 import type { RunRecord } from "./writer/runs.ts";

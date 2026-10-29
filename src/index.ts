@@ -19,7 +19,7 @@ import type {
   ToolResultEvent,
   ToolResultEventResult,
 } from "@earendil-works/pi-coding-agent";
-import { formatExplain, formatStatus, type ListedTopic, type ReminderRecord } from "./commands.ts";
+import { formatExplain, formatStats, parseStatsArgs, formatStatus, type ListedTopic, type ReminderRecord } from "./commands.ts";
 import { resolveConfig, shouldSkipWrite, type MemoryConfig } from "./config.ts";
 import {
   countHumanMessages,
@@ -61,7 +61,7 @@ export const USER_MEMORY_HEADING = "What this user wants from agents in every re
 export const REMINDER_MESSAGE_TYPE = "pi-skill-memory-reminder";
 export const COMMAND_NAME = "memory";
 export const DISCARD_LOCK_TIMEOUT_MS = 2 * 60_000;
-export const SUBCOMMANDS = ["status", "explain", "write"] as const;
+export const SUBCOMMANDS = ["status", "explain", "write", "stats"] as const;
 export const PROPOSALS_COMMAND = "proposals";
 
 export interface ExtensionDeps {
@@ -508,12 +508,13 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         try {
           const session = current(ctx);
           if (subcommand === "status") runStatus(session, ctx);
+          else if (subcommand === "stats") notify(ctx, formatStats(session.config, parseStatsArgs(args.trim().split(/\s+/).slice(1))));
           else if (subcommand === "explain") notify(ctx, formatExplain(listed, session.reminders));
           else if (subcommand === "write") runWrite(session, ctx);
           else {
             notify(
               ctx,
-              `Unknown subcommand "${subcommand}". Use /memory status, /memory explain or /memory write; review proposals with /proposals.`,
+              `Unknown subcommand "${subcommand}". Use /memory status, /memory stats, /memory explain or /memory write; review proposals with /proposals.`,
               "warning",
             );
           }

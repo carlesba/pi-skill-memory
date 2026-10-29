@@ -3,6 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { readHistory } from "../src/history.ts";
 import { emptyLedger, type Ledger } from "../src/ledger.ts";
 import {
   appendUsageEvent,
@@ -41,8 +42,8 @@ test("folds by renaming the log, so appends during the fold land in a fresh file
     { pid: 42, isAlive: () => true },
   );
   assert.equal(folded.length, 2);
-  assert.deepEqual(seenDuringFold, ["usage.42.folding.jsonl"]);
-  assert.deepEqual(readdirSync(stateDir), ["usage.jsonl"]);
+  assert.deepEqual(seenDuringFold, ["history", "usage.42.folding.jsonl"]);
+  assert.deepEqual(readdirSync(stateDir), ["history", "usage.jsonl"]);
   assert.deepEqual(readUsageEvents(stateDir).map((entry) => entry.session), ["s2"]);
   assert.deepEqual(foldUsageLog(join(stateDir, "missing"), () => assert.fail("no fold")), []);
 });
@@ -70,4 +71,30 @@ test("folds events into topic ledgers in time order and finds topics loaded in a
   assert.deepEqual([...touched], ["mem-a"]);
   assert.deepEqual(ledgers["mem-a"]!.topic.votes.map((vote) => vote.kind), ["reminded", "loaded", "loaded"]);
   assert.deepEqual(topicsLoadedInSession(events, "s1"), ["mem-a", "mem-gone"]);
+});
+
+
+test("archives usage before applying and keeps one copy when a failed fold retries", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "psm-archive-"));
+  for (let index = 0; index < 30; index++) {
+    appendUsageEvent(stateDir, event("loaded", "mem-a", "s1", `2025-01-01T00:00:${String(index).padStart(2, "0")}Z`));
+  }
+  assert.throws(() => foldUsageLog(stateDir, () => {
+    assert.equal(readHistory(stateDir, "usage").length, 30);
+    throw new Error("interrupted");
+  }));
+  foldUsageLog(stateDir, () => {});
+  assert.equal(readHistory(stateDir, "usage").length, 30);
+  assert.equal(existsSync(join(stateDir, "history", "usage-2025-01.jsonl")), true);
+});
+
+
+test("distinct usage events with identical fields survive separate folds", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "psm-identical-"));
+  const usage = event("loaded", "mem-a", "s1", "2025-01-01T00:00:00Z");
+  appendUsageEvent(stateDir, usage);
+  foldUsageLog(stateDir, () => {});
+  appendUsageEvent(stateDir, usage);
+  foldUsageLog(stateDir, () => {});
+  assert.equal(readHistory(stateDir, "usage").length, 2);
 });

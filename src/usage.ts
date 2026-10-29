@@ -1,8 +1,11 @@
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { basename, join } from "node:path";
+import { appendHistory, readHistory } from "./history.ts";
 import { recordTopicVote, TOPIC_VOTE_KINDS, type Ledger, type TopicVoteKind } from "./ledger.ts";
 
 export interface UsageEvent {
+  eventId?: string;
   ts: string;
   kind: TopicVoteKind;
   topic: string;
@@ -24,7 +27,7 @@ export function usageLogPath(stateDir: string): string {
 
 export function appendUsageEvent(stateDir: string, event: UsageEvent): void {
   mkdirSync(stateDir, { recursive: true });
-  appendFileSync(usageLogPath(stateDir), `${JSON.stringify(event)}\n`);
+  appendFileSync(usageLogPath(stateDir), `${JSON.stringify({ ...event, eventId: event.eventId ?? randomUUID() })}\n`);
 }
 
 function isUsageEvent(value: unknown): value is UsageEvent {
@@ -45,7 +48,8 @@ export function parseUsageLog(raw: string): UsageEvent[] {
     try {
       const value: unknown = JSON.parse(line);
       if (isUsageEvent(value)) {
-        events.push({ ts: value.ts, kind: value.kind, topic: value.topic, session: value.session });
+        events.push({ ts: value.ts, kind: value.kind, topic: value.topic, session: value.session,
+          ...(typeof value.eventId === "string" ? { eventId: value.eventId } : {}) });
       }
     } catch {
       continue;
@@ -116,6 +120,17 @@ export function foldUsageLog(
       return [];
     }
   });
+  const archived = new Set(readHistory(stateDir, "usage").map((event) => event.archiveId));
+  for (const file of files) {
+    const entries = parseUsageLog(readFileSync(file, "utf8"));
+    entries.forEach((event, index) => {
+      const archiveId = event.eventId ?? createHash("sha256").update(`${basename(file)}:${index}:${JSON.stringify(event)}`).digest("hex");
+      if (!archived.has(archiveId)) {
+        appendHistory(stateDir, "usage", { ...event, archiveId });
+        archived.add(archiveId);
+      }
+    });
+  }
   apply(events);
   for (const file of files) rmSync(file, { force: true });
   return events;

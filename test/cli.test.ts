@@ -172,3 +172,15 @@ test("review needs fzf", async () => {
   assert.match(result.stdout, /needs fzf/);
   assert.equal(missing.fzfRuns.length, 0);
 });
+
+test("stats runs without review dependencies and reports invalid date arguments", async () => {
+  const { deps, jobs, fzfRuns } = fixture({ fzf: false });
+  const result = await runCli(["stats", "--since", "2026-10-29"], deps);
+  assert.equal(result.code, 0);
+  assert.match(result.stdout, /Memory stats \(since 2026-10-29, UTC inclusive\)/);
+  assert.deepEqual(jobs, []);
+  assert.deepEqual(fzfRuns, []);
+  const invalid = await runCli(["stats", "--since", "2026-02-30"], deps);
+  assert.equal(invalid.code, 1);
+  assert.match(invalid.stdout, /usage: stats/);
+});
