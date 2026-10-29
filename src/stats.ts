@@ -1,9 +1,9 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { MemoryConfig } from "./config.ts";
 import { readHistory, readJsonLines } from "./history.ts";
 import { loadLedger } from "./ledger.ts";
-import { listTopics } from "./topics.ts";
+import { listTopics, parseTopic } from "./topics.ts";
 
 const KINDS = ["reminded", "loaded", "selected", "injected", "applied", "confirmed", "ignored", "contradicted", "retracted"] as const;
 type CountKind = typeof KINDS[number];
@@ -72,6 +72,9 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
   const pendingEvents = supplement(archivedEvents, countEvents(pending), true);
   const recorded = [...archivedEvents, ...pendingEvents];
   const topics = listTopics(config.dir);
+  const exampleCounts = new Map(topics.map((topic) => [topic.name,
+    parseTopic(readFileSync(topic.path, "utf8"))?.memories.filter((memory) => memory.kind === "example").length ?? 0]));
+  const exampleAdds = readHistory(config.stateDir, "examples").filter((event) => inWindow(event.ts) && event.kind === "added");
   const ledgerEvents: CountEvent[] = [];
   for (const [topic, path] of [...topics.map((topic) => [topic.name, join(dirname(topic.path), "ledger.json")]),
     ["user.md", join(config.dir, "user.ledger.json")]] as [string, string][]) {
@@ -83,9 +86,9 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
   }
   const legacy = supplement(recorded, ledgerEvents).filter((event) => inWindow(event.ts));
   const events = [...recorded.filter((event) => inWindow(event.ts)), ...legacy];
-  const sessions = new Set([...events, ...extractions, ...runs].flatMap((event) =>
+  const sessions = new Set([...events, ...extractions, ...runs, ...exampleAdds].flatMap((event) =>
     typeof event.session === "string" && event.session ? [event.session] : []));
-  const names = [...new Set([...topics.map((topic) => topic.name), ...events.map((event) => event.topic)])]
+  const names = [...new Set([...topics.map((topic) => topic.name), ...events.map((event) => event.topic), ...exampleAdds.flatMap((event) => typeof event.topic === "string" ? [event.topic] : [])])]
     .filter((name) => name !== "user.md").sort();
   const totals = (topic: string): number[] => KINDS.map((kind) => events.filter((event) => event.topic === topic && event.kind === kind).length);
   const rows = [["topic", ...KINDS], ...names.map((name) => [name, ...totals(name).map(String)]),
@@ -124,6 +127,15 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
       sum + (Array.isArray(event.candidates) ? event.candidates.length : 0), 0))]);
   const confirmations = events.filter((event) => event.kind === "confirmed" && event.session);
   const confirmationKeys = new Set(confirmations.map((event) => JSON.stringify([event.session, event.topic, event.id])));
+  const exampleRows = names.map((name) => [name, String(exampleCounts.get(name) ?? 0),
+    String(exampleAdds.filter((event) => event.topic === name).length)]);
+  const episodeDrops = extractions.flatMap((event) => Array.isArray(event.dropped) ? event.dropped : [])
+    .filter((item) => item?.type === "episode");
+  const exampleGroups = [true, false].map((withExamples) => {
+    const members = topics.filter((topic) => ((exampleCounts.get(topic.name) ?? 0) > 0) === withExamples);
+    const applied = events.filter((event) => event.kind === "applied" && members.some((topic) => topic.name === event.topic)).length;
+    return [withExamples ? "with examples" : "without examples", String(members.length), String(applied), members.length ? (applied / members.length).toFixed(2) : "N/A"];
+  });
   const neverLoaded = names.filter((name) => totals(name)[1] === 0);
   return [
     `Memory stats (${since ? `since ${since}, UTC inclusive` : "all time"})`,
@@ -140,5 +152,11 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
     "", "Candidates dropped by reason:",
     reasons.size ? table([["reason", "count"], ...[...reasons].sort().map(([reason, count]) => [reason, String(count)])]) : "none recorded",
     `Votes dropped: ${droppedVotes}`,
+    "", "Examples per topic (current) and added in window (includes consolidation copies):",
+    table([["topic", "examples", "added"], ...exampleRows]),
+    `Episodes kept: ${extractions.reduce((sum, event) => sum + (Array.isArray(event.episodes) ? event.episodes.length : 0), 0)} (pass-1 accepted, not writes); dropped: ${episodeDrops.length}`,
+    ...episodeDrops.map((item) => `Episode dropped: ${String(item.reason)}`),
+    "Applied votes by current topic example cohort (not causal; excludes removed topics):",
+    table([["cohort", "topics", "applied", "applied/topic"], ...exampleGroups]),
   ].join("\n");
 }

@@ -152,3 +152,29 @@ test("writes are confined to the memory dir, including through symlinks", () => 
   assert.throws(() => confinedPath(dir, "/etc/passwd"), ConfinementError);
   assert.throws(() => confinedPath(dir, "memory-skills/../../outside/x"), ConfinementError);
 });
+
+test("episodes require human acceptance, bounded fields and topic routing while siblings survive", () => {
+  const episode = { situation: "Parser regression", approach: "Used a fixture", outcome: "Caught the bug", evidence: "works", scope: "generic", target: "mem-any-testing" };
+  const result = validateExtract({ candidates: [candidate()], episodes: [
+    episode, { ...episode, evidence: "lgtm" }, { ...episode, evidence: "approved" },
+    { ...episode, approach: "x".repeat(301) }, { ...episode, target: "user.md" }, episode,
+  ] }, { ...context, humanMessages: ["works", "not approved"] });
+  assert.ok(result.ok);
+  assert.equal(result.episodes.length, 1);
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.rejected.filter((item) => item.type === "episode").length, 5);
+  const disabled = validateExtract({ episodes: [episode] }, { ...context, humanMessages: ["works"], maxEpisodes: 0 });
+  assert.ok(disabled.ok);
+  assert.equal(disabled.episodes.length, 0);
+});
+
+test("merge preserves example identity and refuses invented or duplicated example sections", () => {
+  const context = { knownIds: new Set(["r1", "r2"]), existingIds: ["r1", "r2"], exampleIds: new Set(["r2"]), newExamples: 1, maxCharsPerTopic: 4000 };
+  const value = { description: "Testing", body: "Rule. ^r1\n\n## Examples\n\nOld example. ^r2\n\nAccepted example. ^new" };
+  const result = validateMerge(value, context);
+  assert.ok(result.ok);
+  assert.equal(result.memories[1].kind, "example");
+  assert.equal(validateMerge(value, { ...context, newExamples: 0 }).ok, false);
+  assert.equal(validateMerge({ ...value, body: "Rule. ^r1\n\nOld example. ^r2" }, context).ok, false);
+  assert.equal(validateMerge({ ...value, body: `${value.body}\n\n## Examples\n\nDuplicate. ^new` }, context).ok, false);
+});

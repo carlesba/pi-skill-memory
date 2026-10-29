@@ -97,3 +97,9 @@ test("capture settings default to compaction flush and three recent recovery ses
   assert.equal(disabled.recoverDays, 0);
   assert.equal(disabled.recoverMaxSessions, 0);
 });
+
+test("example cap defaults to three and zero disables new episode capture", () => {
+  assert.equal(resolveConfig({}).maxExamplesPerTopic, 3);
+  assert.equal(resolveConfig({ memory: { maxExamplesPerTopic: 0 } }).maxExamplesPerTopic, 0);
+  assert.equal(resolveConfig({ memory: { maxExamplesPerTopic: -1 } }).maxExamplesPerTopic, 3);
+});

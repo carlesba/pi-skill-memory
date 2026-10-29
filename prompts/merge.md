@@ -6,10 +6,12 @@ You maintain one topic of a coding agent's long-term memory. Merge the new candi
 
 - A restatement of an existing memory: keep one memory, worded more precisely, under the existing id.
 - Conflicts: resolve every conflict yourself and keep exactly one memory. A human memory always beats an observed one, whatever their age or weight. Between two memories of the same origin, decide in this order: an explicit user statement beats an inference, newer evidence beats older, higher weight beats lower. New candidates are human. Record each memory you replaced or dropped in `removed`, with its id and why.
-- Each memory is one short paragraph ending in its id: `^r<N>` for an existing memory, `^new` for a new one. Use only the existing ids listed below, and each one at most once. Separate paragraphs with one blank line. No headings, lists or sections.
+- Each memory is one short paragraph ending in its id: `^r<N>` for an existing memory, `^new` for a new one. Use only the existing ids listed below, and each one at most once. Separate paragraphs with one blank line. No headings, lists or sections except a final `## Examples` section.
 - Link a closely related topic as `../<name>/SKILL.md` only when a memory needs it.
 - The description says when to load the topic. It names the trigger moment and the scope, in at most {maxDescriptionChars} characters. Rewrite it when the memories outgrow it or when it is flagged below.
 - The body has at most {maxCharsPerTopic} characters and should hold at most {maxMemoriesPerTopic} memories. When over: first merge overlapping memories, then drop the lowest-weight ones. If the topic holds two distinct trigger moments, name the natural split in `split`. Otherwise `split` is null.
+
+Accepted episode candidates belong only under a final `## Examples` heading, as short situation/approach/outcome paragraphs with ids just like rules. Keep rules before examples. Never invent an example without an accepted episode candidate. Existing examples must remain examples attached to this topic, including during stale-topic consolidation. Preserve existing example ids; merge duplicates rather than repeating them. The extension enforces a separate oldest-first example cap after validation. The memory count limit above applies to rules, while the character budget includes both rules and examples.
 
 ## Output
 

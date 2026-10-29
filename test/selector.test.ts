@@ -1,8 +1,11 @@
 import { strict as assert } from "node:assert";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveConfig } from "../src/config.ts";
-import { runSelector, selectedTopics, selectorPrompt } from "../src/selector.ts";
+import { runSelector, selectedTopics, selectorPrompt, topicDelivery } from "../src/selector.ts";
 import type { TopicSummary } from "../src/topics.ts";
 
 const candidates: TopicSummary[] = ["one", "two", "three", "four"].map((name) => ({ name, description: `Use ${name}`, scope: "generic", path: `/memory/${name}/SKILL.md`, updated: "" }));
@@ -35,4 +38,16 @@ test("selector completes in process through the configured model registry with c
     },
   } } as unknown as ExtensionContext;
   assert.equal(await runSelector("select", ctx, resolveConfig({}), controller.signal), '["one"]');
+});
+
+
+test("selector includes examples after rules inside the shared character budget", () => {
+  const path = join(mkdtempSync(join(tmpdir(), "psm-examples-")), "SKILL.md");
+  writeFileSync(path, "---\nname: test\n---\nRule first. ^r1\n\n## Examples\n\nWorked example. ^r2\n");
+  const topic = { ...candidates[0], path };
+  const delivered = topicDelivery(topic, "inject", 1000);
+  assert.ok(delivered.indexOf("Rule first") < delivered.indexOf("Worked example"));
+  const budget = delivered.indexOf("## Examples");
+  assert.equal(topicDelivery(topic, "inject", budget).length, budget);
+  assert.doesNotMatch(topicDelivery(topic, "inject", budget), /Worked example/);
 });

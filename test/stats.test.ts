@@ -107,3 +107,22 @@ test("stats groups runs and accepted lessons by trigger and exposes repeated ses
   assert.match(text, /Repeated confirmed votes on the same memory\/session: 1/);
   assert.match(formatStats(config, "2026-10-30"), /compaction\s+0\s+0/);
 });
+
+test("stats measures current example cohorts, actual additions and kept versus dropped episodes read-only", () => {
+  const root = mkdtempSync(join(tmpdir(), "psm-example-stats-"));
+  const config = { dir: join(root, "memory"), stateDir: join(root, "state") };
+  const topicDir = join(config.dir, "memory-skills", "mem-any-tests");
+  mkdirSync(topicDir, { recursive: true });
+  writeFileSync(join(topicDir, "SKILL.md"), serializeTopic({ name: "mem-any-tests", description: "Tests", scope: "generic", updated: "2026-10-29", memories: [{ id: "r1", text: "Fixture worked.", kind: "example" }] }));
+  appendHistory(config.stateDir, "examples", { topic: "mem-any-tests", id: "r1", kind: "added", ts: "2026-10-29" });
+  appendHistory(config.stateDir, "examples", { topic: "mem-any-tests", id: "r0", kind: "added", ts: "2026-10-28" });
+  appendHistory(config.stateDir, "votes", { topic: "mem-any-tests", id: "r1", kind: "applied", ts: "2026-10-29" });
+  appendHistory(config.stateDir, "extractions", { ts: "2026-10-29", episodes: [{}], dropped: [{ type: "episode", reason: "missing acceptance" }] });
+  const before = snapshot(root);
+  const output = formatStats(config, "2026-10-29");
+  assert.match(output, /mem-any-tests\s+1\s+1\n/);
+  assert.match(output, /Episodes kept: 1 .*dropped: 1/);
+  assert.match(output, /Episode dropped: missing acceptance/);
+  assert.match(output, /with examples\s+1\s+1\s+1.00/);
+  assert.deepEqual(snapshot(root), before);
+});

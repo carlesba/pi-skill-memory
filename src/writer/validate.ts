@@ -1,9 +1,14 @@
 import type { DroppedExtractionItem } from "../history.ts";
 import { parseFrontmatter } from "../frontmatter.ts";
 import { MEMORY_VOTE_KINDS, type MemoryVoteKind } from "../ledger.ts";
-import { parseMemories, parseScope, slugify, type Memory, type Scope } from "../topics.ts";
+import { parseMemories, parseTopicMemories, parseScope, slugify, type Memory, type Scope } from "../topics.ts";
 import {
   MAX_CANDIDATES,
+  MAX_EPISODES,
+  MAX_EPISODE_SITUATION_CHARS,
+  MAX_EPISODE_APPROACH_CHARS,
+  MAX_EPISODE_OUTCOME_CHARS,
+  MAX_EPISODE_EVIDENCE_CHARS,
   MAX_DESCRIPTION_CHARS,
   MAX_EVIDENCE_WORDS,
   MAX_REMOVED_WHY_CHARS,
@@ -26,6 +31,12 @@ export interface Candidate {
   target: CandidateTarget;
 }
 
+export interface Episode extends Omit<Candidate, "rule" | "why"> {
+  situation: string;
+  approach: string;
+  outcome: string;
+}
+
 export interface MemoryVote {
   topic: string;
   id: string;
@@ -40,6 +51,8 @@ export interface Removal {
 export type Validated<T> = ({ ok: true } & T) | { ok: false; error: string };
 
 export interface ExtractContext {
+  humanMessages?: string[];
+  maxEpisodes?: number;
   topicNames: ReadonlySet<string>;
   skillNames: ReadonlySet<string>;
   memoryIdsOf: (topic: string) => ReadonlySet<string> | null;
@@ -47,6 +60,7 @@ export interface ExtractContext {
 
 export interface ExtractResult {
   candidates: Candidate[];
+  episodes: Episode[];
   votes: MemoryVote[];
   dropped: string[];
   rejected: DroppedExtractionItem[];
@@ -136,6 +150,9 @@ export function validateExtract(value: unknown, context: ExtractContext): Valida
     const rawVotes = value.votes === undefined ? [] : value.votes;
     if (!Array.isArray(rawCandidates)) reject("candidates must be an array");
     if (!Array.isArray(rawVotes)) reject("votes must be an array");
+    const rawEpisodes = value.episodes === undefined ? [] : value.episodes;
+    if (!Array.isArray(rawEpisodes)) reject("episodes must be an array");
+    const episodes: Episode[] = [];
     const candidates: Candidate[] = [];
     const votes: MemoryVote[] = [];
     const dropped: string[] = [];
@@ -147,6 +164,31 @@ export function validateExtract(value: unknown, context: ExtractContext): Valida
       } catch (error) {
         if (!(error instanceof Rejection)) throw error;
         rejected.push({ type: "candidate", index, reason: error.message, value: candidate });
+      }
+    });
+    rawEpisodes.forEach((episode, index) => {
+      const where = `episodes[${index}]`;
+      try {
+        if (index >= (context.maxEpisodes ?? MAX_EPISODES)) reject(`${where} exceeds the episode limit`);
+        if (!isRecord(episode)) reject(`${where} must be an object`);
+        const situation = requiredText(episode, "situation", MAX_EPISODE_SITUATION_CHARS, where);
+        const approach = requiredText(episode, "approach", MAX_EPISODE_APPROACH_CHARS, where);
+        const outcome = requiredText(episode, "outcome", MAX_EPISODE_OUTCOME_CHARS, where);
+        const evidence = requiredText(episode, "evidence", MAX_EPISODE_EVIDENCE_CHARS, where);
+        if (wordCount(evidence) > MAX_EVIDENCE_WORDS) reject(`${where}.evidence is longer than ${MAX_EVIDENCE_WORDS} words`);
+        if (!context.humanMessages?.some((message) => message.includes(evidence))) reject(`${where}.evidence is not a quote from a User message`);
+        const acceptingMessage = context.humanMessages?.flatMap((message) => message.split(/(?<=[.!?])\s+/)).some((message) => message.includes(evidence) &&
+          !/\?|\b(not|never|don't|doesn't|didn't|isn't|hasn't|haven't|won't|if|unless|would|could|should)\b/i.test(message));
+        if (!acceptingMessage) reject(`${where}.evidence is negated, conditional or questioning in its User sentence`);
+        if (!/\b(works|worked|lgtm|approved|merged|landed|adopted|looks good|that’s right|that's right|yes|perfect)\b/i.test(evidence) || /\b(not|never|don't|doesn't|didn't|isn't|hasn't|haven't|won't)\b/i.test(evidence)) reject(`${where}.evidence must show explicit acceptance`);
+        const scope = typeof episode.scope === "string" ? parseScope(episode.scope) : null;
+        if (!scope) reject(`${where}.scope must be generic or repo:<owner>/<name>`);
+        const target = parseTarget(requiredText(episode, "target", 200, where), context, where);
+        if (target.kind !== "topic" && target.kind !== "new") reject(`${where}.target must be an existing or new topic`);
+        episodes.push({ situation, approach, outcome, evidence, scope, target });
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        rejected.push({ type: "episode", index, reason: error.message, value: episode });
       }
     });
     rawVotes.forEach((vote, index) => {
@@ -166,7 +208,7 @@ export function validateExtract(value: unknown, context: ExtractContext): Valida
         rejected.push({ type: "vote", index, reason: error.message, value: vote });
       }
     });
-    return { candidates, votes, dropped, rejected };
+    return { candidates, episodes, votes, dropped, rejected };
   });
 }
 
@@ -195,10 +237,12 @@ export interface MarkedBodyContext {
 
 export interface MergeContext extends MarkedBodyContext {
   maxCharsPerTopic: number;
+  exampleIds?: ReadonlySet<string>;
+  newExamples?: number;
 }
 
-function parseMarkedBody(body: string, rawRemoved: unknown, context: MarkedBodyContext): { memories: Memory[]; removed: Removal[] } {
-  const memories = parseMemories(body);
+function parseMarkedBody(body: string, rawRemoved: unknown, context: MarkedBodyContext, topic = false): { memories: Memory[]; removed: Removal[] } {
+  const memories = topic ? parseTopicMemories(body) : parseMemories(body);
   const seen = new Set<string>();
   for (const memory of memories) {
     if (memory.id === null) reject(`a paragraph does not end in ^r<N> or ^new: ${memory.text.slice(0, 60)}`);
@@ -228,12 +272,18 @@ export function validateMerge(value: unknown, context: MergeContext): Validated<
     if (!isRecord(value)) reject("pass 2 output must be an object");
     const description = requiredText(value, "description", MAX_DESCRIPTION_CHARS, "output").replace(/\s+/g, " ");
     const body = requiredBody(value);
-    checkBodyShape(body, context.maxCharsPerTopic);
+    if (body.length > context.maxCharsPerTopic) reject(`body is longer than ${context.maxCharsPerTopic} chars`);
+    checkBodyShape(body.replace(/^## Examples[ \t]*$/m, ""), context.maxCharsPerTopic);
+    if ((body.match(/^## Examples[ \t]*$/gm) ?? []).length > 1) reject("duplicate Examples section");
     const split = value.split;
     if (split !== undefined && split !== null && typeof split !== "string") reject("split must be a string or null");
     const splitText = typeof split === "string" && split.trim() !== "" ? split.trim() : null;
     if (splitText !== null && splitText.length > MAX_SPLIT_CHARS) reject(`split is longer than ${MAX_SPLIT_CHARS} chars`);
-    const { memories, removed } = parseMarkedBody(body, value.removed, context);
+    const { memories, removed } = parseMarkedBody(body, value.removed, context, true);
+    for (const memory of memories) {
+      if (memory.id !== "new" && context.exampleIds && (memory.kind === "example") !== context.exampleIds.has(memory.id!)) reject("existing memory changed example kind");
+    }
+    if (memories.filter((memory) => memory.kind === "example" && memory.id === "new").length > (context.newExamples ?? 0)) reject("new examples lack accepted episodes");
     return { description, memories, removed, split: splitText };
   });
 }

@@ -1,12 +1,12 @@
 import type { WriterTrigger } from "./writer/job.ts";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Candidate, MemoryVote } from "./writer/validate.ts";
+import type { Candidate, Episode, MemoryVote } from "./writer/validate.ts";
 
-export type HistoryKind = "usage" | "votes" | "extractions";
+export type HistoryKind = "usage" | "votes" | "extractions" | "examples";
 
 export interface DroppedExtractionItem {
-  type: "candidate" | "vote";
+  type: "candidate" | "vote" | "episode";
   index: number;
   reason: string;
   value: unknown;
@@ -19,6 +19,7 @@ export interface ExtractionEvent {
   ts: string;
   model: string;
   candidates: Candidate[];
+  episodes?: Episode[];
   dropped: DroppedExtractionItem[];
   votes: MemoryVote[];
   error?: string;

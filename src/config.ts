@@ -21,6 +21,7 @@ export interface MemoryConfig {
   recoverMaxSessions: number;
   maxCharsPerTopic: number;
   maxMemoriesPerTopic: number;
+  maxExamplesPerTopic: number;
   maxGenericTopics: number;
   maxTopicsPerRepo: number;
   maxUserChars: number;
@@ -45,6 +46,7 @@ const numericDefaults = {
   recoverMaxSessions: 3,
   maxCharsPerTopic: 4000,
   maxMemoriesPerTopic: 12,
+  maxExamplesPerTopic: 3,
   maxGenericTopics: 10,
   maxTopicsPerRepo: 8,
   maxUserChars: 4000,

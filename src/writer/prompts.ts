@@ -6,6 +6,11 @@ import type { SkillIndexEntry } from "../skill-index.ts";
 import { parseMemories, type Memory, type Scope } from "../topics.ts";
 import {
   MAX_CANDIDATES,
+  MAX_EPISODES,
+  MAX_EPISODE_SITUATION_CHARS,
+  MAX_EPISODE_APPROACH_CHARS,
+  MAX_EPISODE_OUTCOME_CHARS,
+  MAX_EPISODE_EVIDENCE_CHARS,
   MAX_DESCRIPTION_CHARS,
   MAX_EVIDENCE_WORDS,
   MAX_EXTRACT_PROMPT_CHARS,
@@ -85,7 +90,7 @@ function renderLoadedTopics(topics: LoadedTopic[]): string {
   return topics
     .map((topic) => {
       const memories = topic.memories.filter((memory) => memory.id !== null && memory.id !== "new");
-      const body = memories.map((memory) => `- ${memory.id}: ${memory.text}`).join("\n");
+      const body = memories.map((memory) => `- ${memory.id}: ${memory.kind === "example" ? "[example] " : ""}${memory.text}`).join("\n");
       return `### ${topic.name} (${topic.scope})\n\n${topic.description}\n\n${body || "(no memories)"}`;
     })
     .join("\n\n");
@@ -95,7 +100,7 @@ export function renderUserMemory(userMemory: string): string {
   const memories = parseMemories(userMemory);
   if (memories.length === 0) return "(empty)";
   return memories
-    .map((memory) => (memory.id === null || memory.id === "new" ? `- ${memory.text}` : `- ${memory.id}: ${memory.text}`))
+    .map((memory) => (memory.id === null || memory.id === "new" ? `- ${memory.text}` : `- ${memory.id}: ${memory.kind === "example" ? "[example] " : ""}${memory.text}`))
     .join("\n");
 }
 
@@ -137,6 +142,11 @@ export function buildExtractPrompt(
 ): string {
   const values = {
     maxCandidates: MAX_CANDIDATES,
+    maxEpisodes: MAX_EPISODES,
+    maxSituationChars: MAX_EPISODE_SITUATION_CHARS,
+    maxApproachChars: MAX_EPISODE_APPROACH_CHARS,
+    maxOutcomeChars: MAX_EPISODE_OUTCOME_CHARS,
+    maxEpisodeEvidenceChars: MAX_EPISODE_EVIDENCE_CHARS,
     maxRuleChars: MAX_RULE_CHARS,
     maxWhyChars: MAX_WHY_CHARS,
     maxEvidenceWords: MAX_EVIDENCE_WORDS,
@@ -158,12 +168,14 @@ export function buildExtractPrompt(
 }
 
 export interface MergeCandidate {
+  kind?: "example";
   rule: string;
   why: string;
   evidence: string;
 }
 
 export interface MergeMemory {
+  kind?: "example";
   id: string;
   text: string;
   weight: number;
@@ -187,7 +199,7 @@ function renderCandidates(candidates: MergeCandidate[]): string {
   return listOrNone(
     candidates.map((candidate) => {
       const evidence = candidate.evidence === "" ? "" : ` Evidence: "${candidate.evidence}"`;
-      return `- ${candidate.rule} Why: ${candidate.why}${evidence}`;
+      return `- ${candidate.kind === "example" ? "Accepted episode: " : ""}${candidate.rule} Why: ${candidate.why}${evidence}`;
     }),
   );
 }
@@ -196,7 +208,7 @@ function renderMergeMemories(memories: MergeMemory[]): string {
   return listOrNone(
     memories.map(
       (memory) =>
-        `- ^${memory.id} (origin ${memory.origin}, weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
+        `- ^${memory.id} (${memory.kind === "example" ? "example, " : ""}origin ${memory.origin}, weight ${memory.weight.toFixed(2)}, learned ${memory.learned || "unknown"}): ${memory.text}`,
     ),
   );
 }

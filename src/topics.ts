@@ -8,6 +8,7 @@ export type Scope = "generic" | `repo:${string}`;
 export interface Memory {
   id: string | null;
   text: string;
+  kind?: "example";
 }
 
 export interface TopicFile {
@@ -55,6 +56,17 @@ export function parseMemories(body: string): Memory[] {
     });
 }
 
+export function parseTopicMemories(body: string): Memory[] {
+  const [rules, ...examples] = body.split(/^## Examples[ \t]*$/m);
+  return [...parseMemories(rules!), ...parseMemories(examples.join("\n")).map((memory) => ({ ...memory, kind: "example" as const }))];
+}
+
+export function serializeTopicMemories(memories: Memory[]): string {
+  const rules = serializeMemories(memories.filter((memory) => memory.kind !== "example"));
+  const examples = serializeMemories(memories.filter((memory) => memory.kind === "example"));
+  return [rules, examples ? `## Examples\n\n${examples}` : ""].filter(Boolean).join("\n\n");
+}
+
 export function serializeMemories(memories: Memory[]): string {
   return memories.map((memory) => (memory.id ? `${memory.text} ^${memory.id}` : memory.text)).join("\n\n");
 }
@@ -83,7 +95,7 @@ export function parseTopic(raw: string): TopicFile | null {
     description,
     scope,
     updated: metadata.updated?.trim() ?? "",
-    memories: parseMemories(parsed.body),
+    memories: parseTopicMemories(parsed.body),
   };
 }
 
@@ -97,7 +109,7 @@ export function serializeTopic(topic: TopicFile): string {
     `  updated: ${quoteScalar(topic.updated)}`,
     "---",
   ].join("\n");
-  const body = serializeMemories(topic.memories);
+  const body = serializeTopicMemories(topic.memories);
   return body === "" ? `${frontmatter}\n` : `${frontmatter}\n\n${body}\n`;
 }
 

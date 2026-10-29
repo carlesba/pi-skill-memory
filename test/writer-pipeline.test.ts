@@ -586,3 +586,48 @@ test("a failed bounded pass leaves its turns available to a later job", async ()
   assert.match(prompt, /Add a test for the parser/);
   assert.match(prompt, /No, I said node:test/);
 });
+
+test("accepted episodes persist under Examples, evict oldest independently and receive votes", async () => {
+  const fixture = setup({ autoCommit: false, maxExamplesPerTopic: 1, maxMemoriesPerTopic: 2 });
+  writeFileSync(fixture.sessionFile, readFileSync(fixture.sessionFile, "utf8").replace("Add a test for the parser.", "It works. Add a test for the parser."));
+  const path = topicSkillPath(fixture.dir, "mem-any-testing");
+  const existing = parseTopic(readFileSync(path, "utf8"))!;
+  existing.memories.push({ id: "r3", text: "Old accepted fixture.", kind: "example" });
+  writeFileSync(path, serializeTopic(existing));
+  const ledger = loadLedger(topicLedgerPath(fixture.dir, existing.name));
+  ledger.nextId = 4;
+  ledger.memories.r3 = { source: "old", origin: "human", learned: "2025-01-01", votes: [] };
+  saveLedger(topicLedgerPath(fixture.dir, existing.name), ledger);
+  const script = scriptedModel({ extract: { episodes: [{ situation: "Parser regression.", approach: "Used fixtures.", outcome: "Bug caught.", evidence: "It works.", target: existing.name, scope: "generic" }] }, merges: {
+    [existing.name]: { description: existing.description, body: "Use node:test. ^r1\n\nKeep snapshots nearby. ^r2\n\n## Examples\n\nOld accepted fixture. ^r3\n\nParser regression. Used fixtures. Bug caught. ^new" },
+  } });
+  const result = await runPipeline(job(fixture), { model: script.model, now: () => NOW, home: fixture.root });
+  assert.deepEqual(result.rejected, []);
+  const topic = parseTopic(readFileSync(path, "utf8"))!;
+  assert.deepEqual(topic.memories.map((memory) => memory.id), ["r1", "r2", "r4"]);
+  assert.equal(topic.memories[2].kind, "example");
+  assert.ok(loadLedger(topicLedgerPath(fixture.dir, existing.name)).memories.r4);
+  assert.equal(readHistory(fixture.config.stateDir, "examples").length, 1);
+  assert.equal((readHistory(fixture.config.stateDir, "extractions")[0].episodes as unknown[]).length, 1);
+  const vote = scriptedModel({ extract: { votes: [{ topic: existing.name, id: "r4", kind: "applied" }] }, merges: {} });
+  await runPipeline(job(fixture), { model: vote.model, now: () => NOW, home: fixture.root });
+  assert.equal(loadLedger(topicLedgerPath(fixture.dir, existing.name)).memories.r4.votes[0].kind, "applied");
+});
+
+test("stale consolidation carries examples into the destination topic instead of turning them into rules", async () => {
+  const fixture = setup({ autoCommit: false });
+  const stale = "mem-any-old-notes";
+  const ledger = emptyLedger("2024-01-01T00:00:00.000Z");
+  ledger.nextId = 2;
+  ledger.memories.r1 = { source: "old", origin: "human", learned: "2024-01-01", votes: [] };
+  writeTopic(fixture.dir, stale, "generic", "When writing tests in any repo.", [{ id: "r1", text: "A fixture caught a parser bug.", kind: "example" }], ledger);
+  appendUsageEvent(fixture.config.stateDir, { topic: "mem-any-testing", kind: "loaded", session: "sess-1", ts: NOW.toISOString() });
+  const script = scriptedModel({ extract: {}, merges: { "mem-any-testing": {
+    description: "When writing tests.", body: "Use node:test. ^r1\n\nKeep snapshots nearby. ^r2\n\n## Examples\n\nA fixture caught a parser bug. ^new",
+  } } });
+  const result = await runPipeline(job(fixture), { model: script.model, now: () => NOW, home: fixture.root });
+  assert.deepEqual(result.rejected, []);
+  assert.equal(existsSync(topicSkillPath(fixture.dir, stale)), false);
+  assert.equal(parseTopic(readFileSync(topicSkillPath(fixture.dir, "mem-any-testing"), "utf8"))!.memories[2].kind, "example");
+  assert.match(script.prompts[1], /Accepted episode: A fixture caught/);
+});

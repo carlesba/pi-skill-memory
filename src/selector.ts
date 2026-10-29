@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MemoryConfig } from "./config.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
-import type { TopicSummary } from "./topics.ts";
+import { parseTopicMemories, serializeTopicMemories, type TopicSummary } from "./topics.ts";
 
 export type SelectorRunner = (prompt: string, ctx: ExtensionContext, config: MemoryConfig, signal: AbortSignal) => Promise<string>;
 
@@ -31,7 +31,7 @@ export function selectedTopics(output: string, candidates: TopicSummary[]): Topi
 export function topicDelivery(topic: TopicSummary, mode: "inject" | "point", budget: number): string {
   const heading = `[memory] Selected ${topic.name} because its description matches this request: ${topic.description}\n`;
   if (mode === "point") return `${heading}Read ${topic.path} before acting.`;
-  const body = parseFrontmatter(readFileSync(topic.path, "utf8"))?.body.trim() ?? "";
+  const body = serializeTopicMemories(parseTopicMemories(parseFrontmatter(readFileSync(topic.path, "utf8"))?.body.trim() ?? ""));
   if (!body || budget <= heading.length) return "";
   return heading + body.slice(0, budget - heading.length);
 }

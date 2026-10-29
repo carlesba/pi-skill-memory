@@ -115,17 +115,30 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Review on: 2026-11-19
 - Outcome (filled at review): Pending. Recovery deliberately excludes sessions with any writer run, including a prior compaction followed by an interrupted tail. Existing per-turn/prompt caps and pass-2 rejection semantics remain; a crash between memory mutation and run recording is not transactional.
 
+## D-009 — Keep user-accepted examples with topic rules
+
+- ID: D-009
+- Date: 2026-10-29
+- Decision: Extract optional user-accepted episodes and merge them into topic `## Examples` sections with ordinary ledger ids and votes. Keep at most `memory.maxExamplesPerTopic` examples (default 3), evicting oldest first; inject rules before examples within the existing selector budget.
+- Why: Rules describe what to do but omit concrete approaches that worked. The offline model-tier reports evaluated rules and recall, not episodic examples, so they do not establish an example benefit. Require explicit human acceptance rather than agent success claims and preserve valid siblings when an episode is invalid.
+- Hypothesis: Topics with examples get more applied votes per topic than topics without examples at review, because accepted approaches make rules easier to apply.
+- Metric(s) and how to read them with `pi-memory stats`: Run `pi-memory stats --since 2026-10-29` for current examples per topic, persisted additions in the window, kept/dropped episodes and reasons, and applied votes per topic grouped by current presence of examples. Compare cohort sizes and loads/injections alongside the means; current cohorts are not historical assignments or a causal experiment. Additions include consolidation copies with newly minted ids, while kept episodes count pass-1 acceptance even if pass 2 rejects. Inspect extraction history to audit acceptance and unrelated approval false positives.
+- Baseline: No structured examples, episode extraction events or example-addition history existed before D-009. D-001 recorded one topic-memory vote across 25 topics in three weeks; neither offline report measured episodic utility, so no comparative example-cohort baseline is available.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending. Conservative English acceptance checks can miss valid approvals; semantic relevance still depends on the model. Consolidation resets copied example age, and memory writes and history appends retain the existing nontransactional crash window.
+
 ## Data we keep and why
 
 | File | Decisions supported |
 | --- | --- |
-| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005, D-006, D-007: the actual memories, descriptions, and scope whose utility we judge. |
-| Memory directory `user.ledger.json`, `memory-skills/<topic>/ledger.json` | D-001, D-002: capped baseline fallback and live weights/eviction, not full measurement history. |
+| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005, D-006, D-007, D-009: the actual rules, examples, descriptions, and scope whose utility we judge. |
+| Memory directory `user.ledger.json`, `memory-skills/<topic>/ledger.json` | D-001, D-002, D-009: rule/example ids and votes, capped baseline fallback and live weights/eviction, not full measurement history. |
 | Memory directory `proposals.md` | D-004: lessons routed to hand-written skills rather than automatic memory writes. |
 | State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005, D-006: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
 | State `history/usage-YYYY-MM.jsonl` | D-002, D-005, D-006: append-only reminded/loaded/selected/injected events with session, timestamp and selector delivery mode, retained even when a topic disappears. |
-| State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
-| State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004, D-008: trigger and branch endpoint, duplicate-vote rejection reasons, each attempted pass-1 result, configured model (or pi default), kept candidates, dropped candidates/votes with raw item and reason, accepted votes, and structural/model errors. |
+| State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004, D-006, D-009: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
+| State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004, D-008, D-009: trigger and branch endpoint, duplicate-vote rejection reasons, each attempted pass-1 result, configured model (or pi default), kept candidates and episodes, dropped candidates/episodes/votes with raw item and reason, accepted votes, and structural/model errors. |
+| State `history/examples-YYYY-MM.jsonl` | D-009: persisted example additions with topic, id, session and timestamp, including consolidation copies; retained after eviction. |
 | State `runs.jsonl` | D-001, D-003, D-004, D-008: trigger and completed branch endpoints for incremental processing, writer outcomes and failures; proposal apply records remain separate from writer counts. |
 | State `writer.log` | D-003, D-004, D-006: operational failure context, including silent selector failures and timeouts, such as authentication or model selection errors. |
 | Session `pi-skill-memory-watermark` custom entries | D-008: queued branch endpoint and previously completed endpoints; queued work is not treated as completed without a successful run. |
@@ -140,5 +153,5 @@ History contains lesson text and evidence quotes, so it is sensitive like the so
 ## Planned next — not decided
 
 - Audit D-008 weekly capture by trigger and same-session duplicate candidates; assess whether sessions with prior writer runs need interrupted-tail recovery.
-- Episodic `## Examples` in topics.
+- Audit D-009 acceptance precision, example cohort applied votes and budget truncation; assess conservative English matching and consolidation age resets before expanding capture.
 - Audit D-006 selected-to-applied conversion and relevant-session usage before revisiting D-007 descriptions; investigate short-turn misses and false-positive selections.

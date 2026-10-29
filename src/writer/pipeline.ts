@@ -42,6 +42,7 @@ import {
 } from "../weights.ts";
 import { buildCommitMessage, commitMemory, runGit, type CommitSummary, type GitExec } from "./commit.ts";
 import { confinedPath, confinedTopicPath } from "./confine.ts";
+import { MAX_EPISODES } from "./limits.ts";
 import type { WriterJob } from "./job.ts";
 import { extractJson, type ModelRunner } from "./model.ts";
 import {
@@ -126,6 +127,7 @@ function mergeMemoriesOf(holder: MemoryHolder, now: Date, halfLifeDays: number):
   return holder.memories.map((memory) => {
     const entry = memory.id ? holder.ledger.memories[memory.id] : undefined;
     return {
+      kind: memory.kind,
       id: memory.id ?? "new",
       text: memory.text,
       weight: memoryWeight(entry, now, halfLifeDays),
@@ -136,7 +138,7 @@ function mergeMemoriesOf(holder: MemoryHolder, now: Date, halfLifeDays: number):
 }
 
 function mintNewMemories(memories: Memory[], ledger: Ledger, source: string, now: Date): Memory[] {
-  return memories.map((memory) => (memory.id === "new" ? { id: mintId(ledger, source, now), text: memory.text } : memory));
+  return memories.map((memory) => (memory.id === "new" ? { ...memory, id: mintId(ledger, source, now) } : memory));
 }
 
 function loadUserMemory(dir: string): MemoryHolder {
@@ -198,6 +200,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   const removed: CommitSummary["removed"] = [];
   const deletedTopics: CommitSummary["deletedTopics"] = [];
   const proposals: string[] = [];
+  const exampleAdditions: { topic: string; id: string; kind: string; session: string; ts: string }[] = [];
   let userChanged = false;
   let user: MemoryHolder | null = null;
 
@@ -250,6 +253,9 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
             memories: topic.memories,
           }),
         );
+        for (const event of exampleAdditions.filter((event) => event.topic === topic.name && topic.memories.some((memory) => memory.id === event.id))) {
+          appendHistory(config.stateDir, "examples", event);
+        }
         touchedTopics.add(topic.name);
       }
       saveTopicLedger(topic);
@@ -322,6 +328,8 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   let pass1: ReturnType<typeof validateExtract>;
   try {
     pass1 = validateExtract(extractJson(await deps.model(extractPrompt)), {
+      humanMessages: digest.turns.filter((turn) => turn.human && !turn.contextOnly).map((turn) => turn.user),
+      maxEpisodes: Math.floor(config.maxExamplesPerTopic) === 0 ? 0 : MAX_EPISODES,
       topicNames: new Set(topics.keys()),
       skillNames: new Set(skills.map((skill) => skill.name)),
       memoryIdsOf: (name) => {
@@ -347,6 +355,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     pass1.rejected.push({ type: "vote", index, value: vote, reason: "vote already recorded for this memory and session" });
     return false;
   });
+  extraction.episodes = pass1.episodes;
   extraction.candidates = pass1.candidates;
   extraction.votes = pass1.votes;
   extraction.dropped = pass1.rejected;
@@ -383,10 +392,15 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   const proposalCandidates: Candidate[] = [];
   const caps = { maxGenericTopics: config.maxGenericTopics, maxTopicsPerRepo: config.maxTopicsPerRepo };
   const routeTo = (topic: TopicState, candidate: Candidate) => {
-    topic.candidates.push(toMergeCandidate(candidate));
+    topic.candidates.push({ ...toMergeCandidate(candidate), ...("kind" in candidate ? { kind: "example" as const } : {}) });
     topic.needsMerge = true;
   };
-  for (const candidate of pass1.candidates) {
+  const episodeCandidates = pass1.episodes.map((episode) => ({
+    ...episode, kind: "example" as const,
+    rule: `${episode.situation} ${episode.approach} ${episode.outcome}`,
+    why: "User-accepted example, keep under ## Examples",
+  }));
+  for (const candidate of [...pass1.candidates, ...episodeCandidates]) {
     const target = candidate.target;
     if (target.kind === "user") {
       userCandidates.push(toMergeCandidate(candidate));
@@ -464,6 +478,8 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
         knownIds: new Set(Object.keys(topic.ledger.memories)),
         existingIds: presentIds(topic.memories),
         maxCharsPerTopic: config.maxCharsPerTopic,
+        exampleIds: new Set(topic.memories.filter((memory) => memory.kind === "example").map((memory) => memory.id!)),
+        newExamples: candidates.filter((candidate) => candidate.kind === "example").length,
       });
     } catch (error) {
       result = { ok: false, error: errorMessage(error) };
@@ -473,13 +489,14 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       log(`pass 2 rejected for ${topic.name}: ${result.error}`);
       return false;
     }
+    const previousIds = new Set(presentIds(topic.memories));
     topic.description = result.description;
     topic.memories = mintNewMemories(result.memories, topic.ledger, sessionId, now);
     for (const entry of result.removed) removed.push({ topic: topic.name, id: entry.id, why: entry.why });
     if (result.split) log(`${topic.name} could split: ${result.split}`);
     const evicted = selectMemoryEvictions(
       topic.ledger,
-      presentIds(topic.memories),
+      presentIds(topic.memories.filter((memory) => memory.kind !== "example")),
       config.maxMemoriesPerTopic,
       now,
       config,
@@ -488,9 +505,17 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       topic.memories = withoutMemories(topic.memories, evicted);
       for (const id of evicted) removed.push({ topic: topic.name, id, why: "evicted at the memory cap, lowest weight" });
     }
+    const examples = topic.memories.filter((memory) => memory.kind === "example").sort((a, b) =>
+      (topic.ledger.memories[a.id!]?.learned ?? "").localeCompare(topic.ledger.memories[b.id!]?.learned ?? "") || Number(a.id!.slice(1)) - Number(b.id!.slice(1)));
+    const expired = examples.slice(0, Math.max(0, examples.length - Math.floor(config.maxExamplesPerTopic)));
+    topic.memories = withoutMemories(topic.memories, expired.map((memory) => memory.id!));
+    for (const memory of expired) removed.push({ topic: topic.name, id: memory.id!, why: "oldest example at the example cap" });
     topic.bodyChanged = true;
     topic.ledgerChanged = true;
     topic.merged = true;
+    for (const memory of topic.memories.filter((memory) => memory.kind === "example" && !previousIds.has(memory.id!))) {
+      exampleAdditions.push({ topic: topic.name, id: memory.id!, kind: "added", session: sessionId, ts: now.toISOString() });
+    }
     return true;
   };
 
@@ -574,6 +599,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
       })),
     );
     const carried = stale.memories.map((memory) => ({
+      kind: memory.kind,
       rule: memory.text,
       why: `carried over from stale topic ${name}`,
       evidence: "",
