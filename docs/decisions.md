@@ -79,7 +79,7 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Review on: 2026-11-19
 - Outcome (filled at review): pending
 
-## D-006 — Select relevant topics at turn start
+## D-006 — Select relevant topics at turn start (disabled by D-010)
 
 - ID: D-006
 - Date: 2026-10-29
@@ -126,6 +126,19 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Baseline: No structured examples, episode extraction events or example-addition history existed before D-009. D-001 recorded one topic-memory vote across 25 topics in three weeks; neither offline report measured episodic utility, so no comparative example-cohort baseline is available.
 - Review on: 2026-11-19
 - Outcome (filled at review): Pending. Conservative English acceptance checks can miss valid approvals; semantic relevance still depends on the model. Consolidation resets copied example age, and memory writes and history appends retain the existing nontransactional crash window.
+
+## D-010 — Prove that memories work as skills before adding a matcher
+
+- ID: D-010
+- Date: 2026-10-29
+- Decision: Turn the D-006 selector off (`memory.selector.enabled: false` in the owner's settings) and test whether pi's own skill system can match memory topics once their descriptions and surroundings are improved. The selector code stays, disabled, as the fallback design.
+- Why: The extension's premise is that memories are skills which the harness brings into context when relevant. A separate matcher bypasses that premise. D-005 measured the skill path at 3 of 29 relevant loads, but its findability test asked a model outright which skills it would read, which is not how the main agent behaves during work, so it could not show whether better descriptions help the real path.
+- Hypothesis: Changes that stay within the skill system — description wording, an agent-level instruction to check memory skills, the reminder wording, and fewer broader topics — raise unprompted loads in realistic replays well above 3 of 29.
+- Metric(s) and how to read them with `pi-memory stats`: Offline, a realistic replay in which the main agent model runs with the real system prompt and skill listing on the 29 relevant moments and 10 irrelevant ones, counting unprompted reads of the topic's SKILL.md per variant, two runs each. Live, `pi-memory stats --since 2026-10-29`: `loaded` per topic, `selected` and `injected` staying at zero, and applied votes on topic memories.
+- Baseline: 3 of 29 relevant loads in real sessions (D-005). The explicit-selection ceiling from the simulation is 23 to 25 of 29.
+- Success: The concept holds if the best skills-only variant reaches at least 16 of 29 unprompted loads in replay, with at most 2 false loads on the 10 irrelevant moments, and live topic loads rise over the review window. If it falls short, drop skill registration for memories and move to a matcher-first design with storage chosen for retrieval, closer to Hermes.
+- Review on: 2026-11-19
+- Outcome (filled at review): pending
 
 ## Data we keep and why
 
