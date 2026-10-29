@@ -10,9 +10,9 @@ export const runSelector: SelectorRunner = async (prompt, ctx, config, signal) =
   const separator = config.selectorModel.indexOf("/");
   const model = ctx.modelRegistry.find(config.selectorModel.slice(0, separator), config.selectorModel.slice(separator + 1));
   if (!model) throw new Error(`Selector model not found: ${config.selectorModel}`);
-  const answer = await ctx.modelRegistry.complete(model, {
+  const answer = await ctx.modelRegistry.streamSimple(model, {
     messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
-  }, { signal, maxTokens: 256 });
+  }, { signal, maxTokens: 256 }).result();
   if (answer.stopReason === "error" || answer.stopReason === "aborted") throw new Error(answer.errorMessage ?? answer.stopReason);
   return answer.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
 };

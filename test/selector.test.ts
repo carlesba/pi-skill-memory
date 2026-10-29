@@ -21,7 +21,7 @@ test("selector validates names, deduplicates and caps picks at three", () => {
   assert.deepEqual(Object.keys(data.candidates[0]), ["name", "description"]);
 });
 
-test("selector completes in process through the configured model registry with cancellation", async () => {
+test("selector streams through the model registry so virtual tier models are routed, with cancellation", async () => {
   const controller = new AbortController();
   const model = { id: "fast" };
   const ctx = { modelRegistry: {
@@ -30,11 +30,11 @@ test("selector completes in process through the configured model registry with c
       assert.equal(id, "fast");
       return model;
     },
-    complete: async (chosen: unknown, context: { messages: { content: string }[] }, options: { signal: AbortSignal }) => {
+    streamSimple: (chosen: unknown, context: { messages: { content: string }[] }, options: { signal: AbortSignal }) => {
       assert.equal(chosen, model);
       assert.equal(context.messages[0].content, "select");
       assert.equal(options.signal, controller.signal);
-      return { stopReason: "stop", content: [{ type: "text", text: '["one"]' }] };
+      return { result: async () => ({ stopReason: "stop", content: [{ type: "text", text: '["one"]' }] }) };
     },
   } } as unknown as ExtensionContext;
   assert.equal(await runSelector("select", ctx, resolveConfig({}), controller.signal), '["one"]');
