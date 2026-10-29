@@ -50,15 +50,16 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Review on: 2026-11-19
 - Outcome (filled at review): Pending.
 
-## D-004 — PENDING
+## D-004 — Writer runs on the smart tier
 
 - ID: D-004
 - Date: 2026-10-29
-- Decision: Pending owner confirmation. Proposed: move `writerModel` from `tier/fast` to `tier/smart`.
+- Decision: `writerModel` moves from `tier/fast` to `tier/smart` (decided 2026-10-29, set in dotfiles `pi/.pi/agent/settings.base.json`). The owner is also re-pointing the Bedrock smart tier above Opus, because Opus performs at the level of Codex mid (Sol) and Astra corresponds to a stronger Anthropic model.
 - Evidence (offline replay, 20 sessions, live codex profile, blinded Bedrock Opus judge): fast `openai-codex/gpt-6-luna` passed validation 18/20 (both failures were evidence quotes over 20 words), produced 1.30 candidates per session, judge mean 3.94, 42.3% of candidates scored at least 4. Smart `openai-codex/gpt-6.1-sol` passed 20/20, produced 1.80 candidates per session, judge mean 4.21, 88.9% scored at least 4. Mean latency 11.7 s against 13.2 s; token cost was not observable. Mid `gpt-6.1-terra` is rejected on the ChatGPT account, so `tier/mid` cannot run at all under the codex profile. Caveats: one judge, historical memory snapshots reconstructed from dotfiles git with a timing heuristic.
 - Evidence v2 (`evals/2026-10-29-v2-all-tiers/`, six writers, blind judges Opus and Astra): mean score averaged over both judges and share of candidates at 4 or more were Luna 4.39 / 88%, Sol 4.61 / 97%, Astra 4.60 / 100%, Haiku 4.17 / 66%, Sonnet 4.25 / 73%, Opus 4.57 / 95%. Under the Opus judge alone, Opus 4.47, Sol 4.32, Astra 4.29, Haiku 4.06, Luna 4.02. Valid runs out of 20: Luna 18, Sol 20, Astra 19, Haiku 20, Sonnet 13, Opus 16; every failure was an evidence quote over 20 words, which D-003 now drops per candidate instead of losing the run. The judges agree only moderately (r 0.55, weighted kappa 0.37) and Astra scores Codex output higher, so counts of uncaptured lessons (7 against 77) are not reliable. Smart tiers beat fast tiers on both providers; tier is not monotonic on Bedrock, where Sonnet trails Haiku in the Opus judge's share at 4 or more.
 - Why: Evaluate cost and extraction quality before changing the writer model.
-- Hypothesis: A faster tier may preserve useful lessons at lower cost.
+- Hypothesis: A smart-tier writer keeps more lessons that are worth keeping, so more topic memories exist to be applied later.
+- Learnings: Model choice drives lesson quality and tier names are not comparable across providers; compare models, not tier labels. A judge from one family can favour its own family, so use two judges from different families and trust rankings that both agree on. Under the Opus judge alone Haiku and Luna score about the same, so the apparent weakness of the Anthropic fast tier comes partly from the Codex judge.
 - Metric(s) and how to read them with `pi-memory stats`: Offline replay of 20 sessions across fast/mid/smart; results in `~/.local/state/pi-skill-memory/evals/2026-10-29-model-tiers/`. Use stats writer outcomes and candidate-drop reasons as production context; stats does not score replay quality or costs by model.
 - Baseline: D-001 plus the offline replay results when available.
 - Review on: 2026-11-19
