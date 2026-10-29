@@ -116,6 +116,14 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
   }
   const appliedSelections = [...selectedPairs.values()].filter((selection) => events.some((event) =>
     event.kind === "applied" && event.topic === selection.topic && event.session === selection.session && event.ts >= selection.ts)).length;
+  const triggers = ["shutdown", "compaction", "recovery", "manual", "unknown"];
+  const triggerOf = (event: Record<string, unknown>) => typeof event.trigger === "string" ? event.trigger : "unknown";
+  const triggerRows = triggers.map((trigger) => [trigger,
+    String(runs.filter((run) => triggerOf(run) === trigger).length),
+    String(extractions.filter((event) => triggerOf(event) === trigger).reduce((sum, event) =>
+      sum + (Array.isArray(event.candidates) ? event.candidates.length : 0), 0))]);
+  const confirmations = events.filter((event) => event.kind === "confirmed" && event.session);
+  const confirmationKeys = new Set(confirmations.map((event) => JSON.stringify([event.session, event.topic, event.id])));
   const neverLoaded = names.filter((name) => totals(name)[1] === 0);
   return [
     `Memory stats (${since ? `since ${since}, UTC inclusive` : "all time"})`,
@@ -126,6 +134,9 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
     "", "Writer runs by outcome:",
     outcomes.size ? table([["outcome", "runs"], ...[...outcomes].sort().map(([kind, count]) => [kind, String(count)])]) : "none",
     `Pass-1 validation failures: ${runs.filter((run) => typeof run.error === "string" && run.error.startsWith("pass 1 rejected:")).length}`,
+    "", "Writer runs and lessons kept by trigger (kept = pass-1 accepted candidates, not applied writes):",
+    table([["trigger", "runs", "lessons kept"], ...triggerRows]),
+    `Repeated confirmed votes on the same memory/session: ${confirmations.length - confirmationKeys.size}`,
     "", "Candidates dropped by reason:",
     reasons.size ? table([["reason", "count"], ...[...reasons].sort().map(([reason, count]) => [reason, String(count)])]) : "none recorded",
     `Votes dropped: ${droppedVotes}`,

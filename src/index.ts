@@ -52,7 +52,8 @@ import { runSelector, selectedTopics, selectorPrompt, topicDelivery, type Select
 import { appendUsageEvent } from "./usage.ts";
 import { isInside } from "./writer/confine.ts";
 import { enqueueWriter, findOnPath, type EnqueueResult, type Which } from "./writer/enqueue.ts";
-import type { ApplyProposal, QueuedJob, WriterJob } from "./writer/job.ts";
+import { processedEntryIds, recoverableSessions, unprocessedEntries, WATERMARK_TYPE } from "./writer/checkpoint.ts";
+import type { ApplyProposal, QueuedJob, WriterJob, WriterTrigger } from "./writer/job.ts";
 import { PACKAGE_ROOT } from "./writer/prompts.ts";
 import { appendWriterLog, readLastRun } from "./writer/runs.ts";
 import { memoryTopicOfPath } from "./writer/session.ts";
@@ -241,7 +242,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         });
     }
 
-    function buildJob(session: SessionState, ctx: SessionView, sessionFile: string, force: boolean): WriterJob {
+    function buildJob(session: SessionState, ctx: SessionView, sessionFile: string, force: boolean, trigger: WriterTrigger): WriterJob {
       return {
         config: session.config,
         sessionFile,
@@ -249,6 +250,8 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         cwd: ctx.cwd,
         packageRoot: deps.packageRoot,
         force,
+        trigger,
+        endEntryId: ctx.sessionManager.getLeafId() ?? undefined,
         createdAt: deps.now().toISOString(),
       };
     }
@@ -309,6 +312,13 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       try {
         const session = startSession(ctx);
         if (event.reason === "startup" && ctx.mode === "tui") {
+          if (!shouldSkipWrite(session.config, deps.env)) {
+            void recoverableSessions(session.config, session.sessionId, deps.now()).then((sessions) => {
+              for (const recovered of sessions) deps.enqueue({
+                ...buildJob(session, ctx, recovered.sessionFile, false, "recovery"), ...recovered,
+              });
+            }).catch((error) => logFailure("recovery", error));
+          }
           retryApprovedProposals(session, ctx);
           showProposalWidget(session, ctx, true);
         }
@@ -452,6 +462,32 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       if (state) state.pendingInputs.length = 0;
     });
 
+    function queueSession(session: SessionState, ctx: SessionView, trigger: WriterTrigger): EnqueueResult | undefined {
+      const force = trigger === "manual";
+      if (!force && shouldSkipWrite(session.config, deps.env)) return;
+      const sessionFile = ctx.sessionManager.getSessionFile();
+      if (!sessionFile) return;
+      const branch = ctx.sessionManager.getBranch();
+      const completed = processedEntryIds(session.config.stateDir, session.sessionId);
+      const pending = session.manualWriteLeaf ? [...completed, session.manualWriteLeaf] : completed;
+      const remaining = unprocessedEntries(branch, pending);
+      const humans = countHumanMessages(remaining, session.config.learnFromSources);
+      if (!force && (humans === 0 || humans < session.config.minUserMessages)) return;
+      if (session.manualWriteLeaf !== undefined && session.manualWriteLeaf === ctx.sessionManager.getLeafId()) return;
+      const job = buildJob(session, ctx, sessionFile, force, trigger);
+      const result = deps.enqueue(job);
+      pi.appendEntry(WATERMARK_TYPE, { processedEntryIds: completed, queuedThrough: job.endEntryId, trigger });
+      session.manualWriteLeaf = ctx.sessionManager.getLeafId();
+      return result;
+    }
+
+    pi.on("session_before_compact", (_event, ctx) => {
+      try {
+        const session = current(ctx);
+        if (session.config.flushBeforeCompaction) queueSession(session, ctx, "compaction");
+      } catch (error) { logFailure("session_before_compact", error); }
+    });
+
     pi.on("session_compact", () => {
       cancelSelection();
       state?.announced.clear();
@@ -487,13 +523,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       try {
         if (event.reason === "reload") return;
         const session = current(ctx);
-        if (shouldSkipWrite(session.config, deps.env)) return;
-        const sessionFile = ctx.sessionManager.getSessionFile();
-        if (!sessionFile) return;
-        const branch = ctx.sessionManager.getBranch();
-        if (countHumanMessages(branch, session.config.learnFromSources) < session.config.minUserMessages) return;
-        if (session.manualWriteLeaf !== undefined && session.manualWriteLeaf === ctx.sessionManager.getLeafId()) return;
-        deps.enqueue(buildJob(session, ctx, sessionFile, false));
+        queueSession(session, ctx, "shutdown");
       } catch (error) {
         logFailure("session_shutdown", error);
       } finally {
@@ -590,8 +620,8 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
         notify(ctx, "This session has no session file (--no-session), so there is nothing to write from.", "warning");
         return;
       }
-      const result = deps.enqueue(buildJob(session, ctx, sessionFile, true));
-      session.manualWriteLeaf = ctx.sessionManager.getLeafId();
+      const result = queueSession(session, ctx, "manual");
+      if (!result) { notify(ctx, "No new turns to write."); return; }
       notify(ctx, `Queued the memory writer for this session (${result.runner} runner, job ${result.jobFile}).`);
     }
 

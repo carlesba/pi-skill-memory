@@ -70,3 +70,19 @@ test("marks a user message human only when an input mark from an allowed source 
   assert.deepEqual(human(["interactive", "rpc"]), [true, false, true, false, false]);
   assert.deepEqual(human([]), [false, false, false, false, false]);
 });
+
+test("persisted completed checkpoints survive resume and queued checkpoints alone do not consume turns", () => {
+  const entries = [
+    { type: "session", id: "session", cwd: "/work" },
+    { type: "custom", id: "mark", parentId: null, customType: "pi-skill-memory-input", data: { messageTimestamp: 1, source: "interactive", mode: "tui" } },
+    { type: "message", id: "user", parentId: "mark", message: { role: "user", content: "Remember this lesson", timestamp: 1 } },
+    { type: "message", id: "assistant", parentId: "user", message: { role: "assistant", content: "Understood" } },
+    { type: "custom", id: "checkpoint", parentId: "assistant", customType: "pi-skill-memory-watermark", data: { queuedThrough: "assistant", processedEntryIds: [] as string[] } },
+  ];
+  const parse = () => parseSession(entries.map((entry) => JSON.stringify(entry)).join("\n"), { dir: "/memory", resolver: fakeResolver({}) });
+  assert.equal(parse().turns.filter((turn) => turn.human).length, 1);
+  entries.at(-1)!.data!.processedEntryIds = ["assistant"];
+  assert.equal(parse().turns.filter((turn) => turn.human).length, 0);
+  assert.equal(parse().turns[0]!.assistant, "Understood");
+  assert.equal(parse().turns[0]!.contextOnly, true);
+});

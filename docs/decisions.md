@@ -103,6 +103,18 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Review on: 2026-11-19
 - Outcome (filled at review): Pending.
 
+## D-008 — Capture lessons before compaction and recover interrupted sessions
+
+- ID: D-008
+- Date: 2026-10-29
+- Decision: Queue bounded incremental writer jobs before compaction and at shutdown or manual write; asynchronously recover up to three recent qualifying top-level sessions at terminal-UI startup. Keep conditional checkpoints in session custom entries and certify processed endpoints with successful run records under the writer lock.
+- Why: Shutdown-only extraction misses killed sessions and repeatedly sends long transcripts through fixed digest caps. The model-tier reports compare extraction quality on completed historical sessions, not capture coverage; they cannot measure these missing sessions.
+- Hypothesis: Lessons captured per week rise, mostly from compaction and recovery triggers, without duplicate candidates or repeated confirmed votes from the same session.
+- Metric(s) and how to read them with `pi-memory stats`: Compare weekly windows with `pi-memory stats --since 2026-10-29` and later week-start dates. Read runs and lessons kept by trigger, writer outcomes, dropped votes and repeated same-memory/session confirmations. Kept lessons are pass-1 accepted candidates, not successful writes; inspect extraction history to audit duplicate candidate text and vote-drop reasons. Stats does not itself establish semantic non-duplication. Legacy untagged runs remain unknown rather than being attributed to shutdown.
+- Baseline: D-001 had 104 runs across three weeks (71 ok, 14 nothing, 2 skipped, 17 failed), with apply jobs included in that historical total. Compaction and recovery capture did not exist, and historical lesson totals by trigger and duplicate-confirmation rates were not recorded. Offline smart-tier replay kept 36 candidates over 20 sessions in the first report; that is not a production weekly capture baseline.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending. Recovery deliberately excludes sessions with any writer run, including a prior compaction followed by an interrupted tail. Existing per-turn/prompt caps and pass-2 rejection semantics remain; a crash between memory mutation and run recording is not transactional.
+
 ## Data we keep and why
 
 | File | Decisions supported |
@@ -113,10 +125,11 @@ Record each change to the extension with its hypothesis, the metric that will ju
 | State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005, D-006: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
 | State `history/usage-YYYY-MM.jsonl` | D-002, D-005, D-006: append-only reminded/loaded/selected/injected events with session, timestamp and selector delivery mode, retained even when a topic disappears. |
 | State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
-| State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004: each attempted pass-1 result, configured model (or pi default), kept candidates, dropped candidates/votes with raw item and reason, accepted votes, and structural/model errors. |
-| State `runs.jsonl` | D-001, D-003, D-004: writer outcomes and failures; proposal apply records remain separate from writer counts. |
+| State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004, D-008: trigger and branch endpoint, duplicate-vote rejection reasons, each attempted pass-1 result, configured model (or pi default), kept candidates, dropped candidates/votes with raw item and reason, accepted votes, and structural/model errors. |
+| State `runs.jsonl` | D-001, D-003, D-004, D-008: trigger and completed branch endpoints for incremental processing, writer outcomes and failures; proposal apply records remain separate from writer counts. |
 | State `writer.log` | D-003, D-004, D-006: operational failure context, including silent selector failures and timeouts, such as authentication or model selection errors. |
-| State `jobs/*.json` | D-004: queued/retryable inputs for operational diagnosis, not a permanent outcome history. |
+| Session `pi-skill-memory-watermark` custom entries | D-008: queued branch endpoint and previously completed endpoints; queued work is not treated as completed without a successful run. |
+| State `jobs/*.json` | D-004, D-008: bounded branch endpoints and trigger, queued/retryable inputs for operational diagnosis, not a permanent outcome history. |
 | State `proposals-state.json` | D-004: approval, retry, and failure context for lessons sent to hand-written skills. |
 | State `evals/2026-10-29-model-tiers/` | D-004, D-005: offline model replays and recall audit artifacts, read separately from production stats. |
 | State `evals/2026-10-29-v2-all-tiers/` | D-004, D-005, D-006, D-007: read-only model and description-selection evidence; not production stats. |
@@ -126,6 +139,6 @@ History contains lesson text and evidence quotes, so it is sensitive like the so
 
 ## Planned next — not decided
 
-- Before-compaction flush.
+- Audit D-008 weekly capture by trigger and same-session duplicate candidates; assess whether sessions with prior writer runs need interrupted-tail recovery.
 - Episodic `## Examples` in topics.
 - Audit D-006 selected-to-applied conversion and relevant-session usage before revisiting D-007 descriptions; investigate short-turn misses and false-positive selections.

@@ -1,3 +1,4 @@
+import type { WriterTrigger } from "./writer/job.ts";
 import { appendFileSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Candidate, MemoryVote } from "./writer/validate.ts";
@@ -12,6 +13,8 @@ export interface DroppedExtractionItem {
 }
 
 export interface ExtractionEvent {
+  trigger?: WriterTrigger;
+  endEntryId?: string;
   session: string;
   ts: string;
   model: string;

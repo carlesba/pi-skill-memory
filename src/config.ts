@@ -16,6 +16,9 @@ export interface MemoryConfig {
   runner: RunnerKind;
   pueueGroup: string;
   minUserMessages: number;
+  flushBeforeCompaction: boolean;
+  recoverDays: number;
+  recoverMaxSessions: number;
   maxCharsPerTopic: number;
   maxMemoriesPerTopic: number;
   maxGenericTopics: number;
@@ -38,6 +41,8 @@ export const DEFAULT_SKIP_WRITE_WHEN_ENV: string[] = [];
 
 const numericDefaults = {
   minUserMessages: 3,
+  recoverDays: 3,
+  recoverMaxSessions: 3,
   maxCharsPerTopic: 4000,
   maxMemoriesPerTopic: 12,
   maxGenericTopics: 10,
@@ -125,6 +130,7 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
       timeoutMs: nonNegativeNumber(selector.timeoutMs, 5000),
       maxChars: nonNegativeNumber(selector.maxChars, 3000),
     },
+    flushBeforeCompaction: memory.flushBeforeCompaction !== false,
     reminders: typeof memory.reminders === "boolean" ? memory.reminders : true,
     agentDir,
     dir: dirSetting ? resolveSettingPath(dirSetting, home, agentDir) : join(agentDir, "memory"),

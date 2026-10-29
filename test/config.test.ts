@@ -86,3 +86,14 @@ test("selector defaults and explicit overrides stay under the memory key", () =>
   assert.equal(configured.reminders, false);
   assert.deepEqual(configured.selector, { enabled: false, mode: "point", timeoutMs: 12, maxChars: 80 });
 });
+
+test("capture settings default to compaction flush and three recent recovery sessions", () => {
+  const defaults = resolveConfig({});
+  assert.equal(defaults.flushBeforeCompaction, true);
+  assert.equal(defaults.recoverDays, 3);
+  assert.equal(defaults.recoverMaxSessions, 3);
+  const disabled = resolveConfig({ memory: { flushBeforeCompaction: false, recoverDays: 0, recoverMaxSessions: 0 } });
+  assert.equal(disabled.flushBeforeCompaction, false);
+  assert.equal(disabled.recoverDays, 0);
+  assert.equal(disabled.recoverMaxSessions, 0);
+});

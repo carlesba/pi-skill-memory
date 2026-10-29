@@ -13,7 +13,7 @@ import { serializeTopic, topicSkillPath, type Scope } from "../src/topics.ts";
 import { readUsageEvents } from "../src/usage.ts";
 import type { ApplyJob, WriterJob } from "../src/writer/job.ts";
 import { appendRun } from "../src/writer/runs.ts";
-import { fakeResolver } from "./writer-helpers.ts";
+import { fakeResolver, writeFixtureSession } from "./writer-helpers.ts";
 
 type Handler = (event: any, ctx: any) => unknown;
 
@@ -197,6 +197,7 @@ test("the default export registers every handler and the memory command without 
       "message_end",
       "message_start",
       "resources_discover",
+      "session_before_compact",
       "session_compact",
       "session_shutdown",
       "session_start",
@@ -764,4 +765,57 @@ test("a skill read while selection runs suppresses its rule injection", async ()
   assert.equal(await h.fire("context", { messages: [] }), undefined);
   assert.equal(readUsageEvents(fixture.stateDir).some((event) => event.kind === "injected"), false);
   await h.fire("agent_end", {});
+});
+
+test("compaction queues a bounded incremental job and honours its switch and human threshold", async () => {
+  const fixture = makeFixture([]);
+  const h = harness(fixture, { memory: { minUserMessages: 2 } });
+  await h.fire("session_start", {});
+  await h.typed("First lesson");
+  await h.fire("session_before_compact", {});
+  assert.equal(h.jobs.length, 0);
+  await h.typed("Second lesson");
+  h.session.leaf = (h.session.branch.at(-1) as { id: string }).id;
+  await h.fire("session_before_compact", {});
+  assert.equal(h.jobs.length, 1);
+  assert.equal(h.jobs[0]!.trigger, "compaction");
+  assert.equal(h.jobs[0]!.endEntryId, h.session.leaf);
+  assert.ok(h.session.branch.some((entry: any) => entry.customType === "pi-skill-memory-watermark"));
+  await h.fire("session_shutdown", { reason: "exit" });
+  assert.equal(h.jobs.length, 1);
+  const disabled = harness(makeFixture([]), { memory: { minUserMessages: 1, flushBeforeCompaction: false } });
+  await disabled.typed("A lesson");
+  await disabled.fire("session_before_compact", {});
+  assert.equal(disabled.jobs.length, 0);
+});
+
+
+test("interactive startup recovers in the background but resume, non-UI and skip environments do not", async () => {
+  const fixture = makeFixture([]);
+  const directory = join(fixture.root, "agent", "sessions", "project");
+  mkdirSync(directory, { recursive: true });
+  writeFixtureSession(join(directory, "lost.jsonl"), { cwd: fixture.root, dir: fixture.dir });
+  const options = { deps: { env: { PI_CODING_AGENT_DIR: join(fixture.root, "agent") } } };
+  const h = harness(fixture, options);
+  h.session.id = "current";
+  await h.fire("session_start", { reason: "startup" });
+  assert.equal(h.jobs.length, 0);
+  for (let tries = 0; tries < 100 && h.jobs.length === 0; tries++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(h.jobs.length, 1);
+  assert.equal(h.jobs[0]!.trigger, "recovery");
+  assert.equal(h.jobs[0]!.sessionId, "sess-1");
+  assert.equal(h.jobs[0]!.endEntryId, "e9");
+  for (const [reason, mode] of [["resume", "tui"], ["startup", "rpc"], ["startup", "print"]]) {
+    const other = harness(fixture, options);
+    other.session.id = "current";
+    await other.fire("session_start", { reason }, other.ctx(fixture.root, mode));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(other.jobs.length, 0);
+  }
+  const skipped = harness(fixture, { memory: { skipWriteWhenEnv: ["CHILD"] },
+    deps: { env: { ...options.deps.env, CHILD: "1" } } });
+  skipped.session.id = "current";
+  await skipped.fire("session_start", { reason: "startup" });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(skipped.jobs.length, 0);
 });

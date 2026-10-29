@@ -1,3 +1,4 @@
+import type { WriterTrigger } from "./job.ts";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -6,6 +7,8 @@ export type RunOutcomeKind = "ok" | "skipped" | "failed" | "nothing";
 export type RunKind = "write" | "apply";
 
 export interface RunRecord {
+  trigger?: WriterTrigger;
+  endEntryId?: string;
   kind?: RunKind;
   ts: string;
   session: string;

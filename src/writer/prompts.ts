@@ -103,6 +103,7 @@ export function renderTranscript(turns: SessionTurn[]): string {
   if (turns.length === 0) return "(empty)";
   return turns
     .map((turn, index) => {
+      if (turn.contextOnly) return `### Previous assistant context (not evidence for lessons or votes)\n\n${turn.assistant ?? ""}`;
       const heading = turn.human ? `User message ${index + 1}` : `Instructions from another program, message ${index + 1}`;
       const user = `### ${heading}\n\n${turn.user}`;
       return turn.assistant === null ? user : `${user}\n\n### Final assistant text after message ${index + 1}\n\n${turn.assistant}`;

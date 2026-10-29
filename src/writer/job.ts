@@ -10,10 +10,14 @@ interface JobBase {
   createdAt: string;
 }
 
+export type WriterTrigger = "shutdown" | "compaction" | "recovery" | "manual";
+
 export interface WriterJob extends JobBase {
   kind?: "write";
   sessionFile: string;
   force: boolean;
+  trigger?: WriterTrigger;
+  endEntryId?: string;
 }
 
 export interface ApplyProposal {
@@ -44,7 +48,8 @@ export function writeJob(job: QueuedJob): string {
   const directory = jobsDir(job.config.stateDir);
   mkdirSync(directory, { recursive: true });
   const stamp = job.createdAt.replace(/[:.]/g, "-");
-  const label = job.kind === "apply" ? `apply-${job.sessionId || "session"}` : job.sessionId || "session";
+  const label = job.kind === "apply" ? `apply-${job.sessionId || "session"}`
+    : `${job.sessionId || "session"}${job.endEntryId ? `-${job.endEntryId}-${job.trigger ?? "shutdown"}` : ""}`;
   const path = join(directory, `${fileSafe(stamp)}-${fileSafe(label)}.json`);
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(job, null, 2)}\n`);
@@ -96,7 +101,9 @@ export function parseJob(raw: string): QueuedJob {
     return { ...base, kind: "apply", proposals };
   }
   if (typeof data.sessionFile !== "string" || data.sessionFile === "") throw new Error("job file has no sessionFile");
-  return { ...base, sessionFile: data.sessionFile, force: data.force === true };
+  return { ...base, sessionFile: data.sessionFile, force: data.force === true,
+    trigger: ["shutdown", "compaction", "recovery", "manual"].includes(String(data.trigger)) ? data.trigger as WriterTrigger : "shutdown",
+    endEntryId: typeof data.endEntryId === "string" ? data.endEntryId : undefined };
 }
 
 export function loadJob(path: string): QueuedJob {

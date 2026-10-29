@@ -87,3 +87,23 @@ test("stats counts selected and injected and matches later applied votes in the 
   assert.match(formatStats(config), /mem-test\s+0\s+0\s+2\s+2\s+2/);
   assert.match(formatStats(config), /Selected topic\/session pairs later applied: 1\/2/);
 });
+
+test("stats groups runs and accepted lessons by trigger and exposes repeated session confirmations", () => {
+  const root = mkdtempSync(join(tmpdir(), "psm-trigger-stats-"));
+  const config = { dir: join(root, "memory"), stateDir: join(root, "state") };
+  const ts = "2026-10-29T12:00:00.000Z";
+  for (const trigger of ["compaction", "recovery", "manual", "shutdown"] as const) {
+    appendRun(config.stateDir, { ts, session: trigger, trigger, outcome: "ok", topics: [] });
+    appendHistory(config.stateDir, "extractions", { ts, session: trigger, trigger, candidates: [{ rule: "Lesson" }] });
+  }
+  appendRun(config.stateDir, { ts, session: "legacy", outcome: "nothing", topics: [] });
+  appendRun(config.stateDir, { ts, session: "proposal", kind: "apply", outcome: "ok", topics: [] });
+  for (let i = 0; i < 2; i++) appendHistory(config.stateDir, "votes", {
+    ts, session: "same", topic: "user.md", id: "r1", kind: "confirmed",
+  });
+  const text = formatStats(config);
+  for (const trigger of ["compaction", "recovery", "manual", "shutdown"]) assert.match(text, new RegExp(`${trigger}\\s+1\\s+1`));
+  assert.match(text, /unknown\s+1\s+0/);
+  assert.match(text, /Repeated confirmed votes on the same memory\/session: 1/);
+  assert.match(formatStats(config, "2026-10-30"), /compaction\s+0\s+0/);
+});

@@ -13,6 +13,7 @@ export const MAX_ASSISTANT_TEXT_CHARS = 1500;
 export interface SessionTurn {
   user: string;
   human: boolean;
+  contextOnly?: boolean;
   assistant: string | null;
 }
 
@@ -29,14 +30,18 @@ export interface ReadSessionOptions {
   resolver?: RepoResolver;
   home?: string;
   learnFromSources?: readonly InputSource[];
+  endEntryId?: string;
+  processedEntryIds?: readonly string[];
 }
 
-interface RawEntry {
+export interface RawEntry {
   type?: unknown;
   id?: unknown;
   parentId?: unknown;
   cwd?: unknown;
   message?: unknown;
+  customType?: unknown;
+  data?: unknown;
 }
 
 interface ToolCallBlock {
@@ -68,13 +73,13 @@ function parseLines(raw: string): RawEntry[] {
   return entries;
 }
 
-function activeBranch(entries: RawEntry[]): RawEntry[] {
+export function activeBranch(entries: RawEntry[], endEntryId?: string): RawEntry[] {
   const withIds = entries.filter((entry) => entry.type !== "session" && typeof entry.id === "string");
   if (withIds.length === 0) return [];
   const byId = new Map(withIds.map((entry) => [entry.id as string, entry]));
   const branch: RawEntry[] = [];
   const seen = new Set<string>();
-  let current: RawEntry | undefined = withIds[withIds.length - 1];
+  let current: RawEntry | undefined = endEntryId ? byId.get(endEntryId) : withIds[withIds.length - 1];
   while (current && !seen.has(current.id as string)) {
     seen.add(current.id as string);
     branch.push(current);
@@ -118,12 +123,24 @@ export function parseSession(raw: string, options: ReadSessionOptions): SessionD
   const turns: SessionTurn[] = [];
   const touchedPaths = new Set<string>([cwd]);
   const memoryReads = new Set<string>();
-  const branch = activeBranch(entries);
+  const branch = activeBranch(entries, options.endEntryId);
+  const persisted = branch.flatMap((entry) => entry.type === "custom" && entry.customType === "pi-skill-memory-watermark" &&
+    isRecord(entry.data) && Array.isArray(entry.data.processedEntryIds) ? entry.data.processedEntryIds.filter((id): id is string => typeof id === "string") : []);
+  const completed = [...options.processedEntryIds ?? [], ...persisted];
+  const processed = new Set(completed.flatMap((id) => activeBranch(entries, id).map((entry) => String(entry.id))));
+  const start = branch.reduce((last, entry, index) => processed.has(String(entry.id)) ? index + 1 : last, 0);
+  const preceding = branch.slice(0, start).reverse().find((entry) =>
+    entry.type === "message" && isRecord(entry.message) && entry.message.role === "assistant");
+  if (preceding && isRecord(preceding.message)) {
+    const text = lastTextBlock(preceding.message.content);
+    if (text) turns.push({ user: "", human: false, contextOnly: true, assistant: truncateText(text, MAX_ASSISTANT_TEXT_CHARS) });
+  }
   const humanTimestamps = humanMessageTimestamps(branch, options.learnFromSources ?? DEFAULT_LEARN_FROM_SOURCES);
-  for (const entry of branch) {
+  for (const [index, entry] of branch.entries()) {
     if (entry.type !== "message" || !isRecord(entry.message)) continue;
     const message = entry.message;
     if (message.role === "user") {
+      if (index < start) continue;
       const text = messageText(message.content).trim();
       if (text === "") continue;
       turns.push({ user: truncateText(text, MAX_USER_MESSAGE_CHARS), human: isUserMessageFrom(entry, humanTimestamps), assistant: null });
@@ -131,7 +148,7 @@ export function parseSession(raw: string, options: ReadSessionOptions): SessionD
     }
     if (message.role !== "assistant") continue;
     const finalText = lastTextBlock(message.content);
-    if (finalText !== null && turns.length > 0) {
+    if (index >= start && finalText !== null && turns.length > 0 && !turns[turns.length - 1]!.contextOnly) {
       turns[turns.length - 1]!.assistant = truncateText(finalText.trim(), MAX_ASSISTANT_TEXT_CHARS);
     }
     for (const call of toolCallsOf(message.content)) {

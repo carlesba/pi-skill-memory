@@ -55,15 +55,21 @@ export async function runJob(jobFile: string, deps: RunJobDeps = {}): Promise<Ru
   log(`writer started for ${job.sessionFile}`);
   let record: RunRecord;
   try {
-    const result = await withLock(job.config.dir, () => runPipeline(job, { ...deps, model, log }), deps.lock);
-    record = { ts: new Date().toISOString(), session, outcome: result.outcome, topics: result.topics };
-    if (result.error) record.error = result.error;
-    if (result.rejected.length > 0) record.rejected = result.rejected;
+    record = await withLock(job.config.dir, async () => {
+      const result = await runPipeline(job, { ...deps, model, log });
+      const completed: RunRecord = { ts: new Date().toISOString(), session, outcome: result.outcome, topics: result.topics,
+        trigger: job.trigger ?? "shutdown", ...(job.endEntryId ? { endEntryId: job.endEntryId } : {}) };
+      if (result.error) completed.error = result.error;
+      if (result.rejected.length > 0) completed.rejected = result.rejected;
+      appendRun(stateDir, completed);
+      return completed;
+    }, deps.lock);
   } catch (error) {
-    record = { ts: new Date().toISOString(), session, outcome: "failed", topics: [], error: errorMessage(error) };
+    record = { ts: new Date().toISOString(), session, outcome: "failed", topics: [], error: errorMessage(error),
+      trigger: job.trigger ?? "shutdown", ...(job.endEntryId ? { endEntryId: job.endEntryId } : {}) };
+    appendRun(stateDir, record);
   }
   log(`writer finished: ${record.outcome}${record.error ? ` (${record.error})` : ""}`);
-  appendRun(stateDir, record);
   if (record.outcome !== "failed") rmSync(jobFile, { force: true });
   return record;
 }

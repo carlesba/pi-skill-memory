@@ -54,6 +54,7 @@ import {
   type MergeMemory,
 } from "./prompts.ts";
 import type { RunOutcomeKind } from "./runs.ts";
+import { processedEntryIds } from "./checkpoint.ts";
 import { readSession } from "./session.ts";
 import { validateExtract, validateMerge, validateUserMerge, type Candidate, type Removal } from "./validate.ts";
 
@@ -281,10 +282,11 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     if (why !== null) deletedTopics.push({ topic: name, why });
   }
 
-  const digest = readSession(job.sessionFile, { dir, resolver: deps.resolver, home, learnFromSources: config.learnFromSources });
+  const digest = readSession(job.sessionFile, { dir, resolver: deps.resolver, home, learnFromSources: config.learnFromSources,
+    endEntryId: job.endEntryId, processedEntryIds: processedEntryIds(config.stateDir, job.sessionId) });
   const sessionId = job.sessionId || digest.sessionId;
   const humanMessages = digest.turns.filter((turn) => turn.human).length;
-  if (!job.force && humanMessages < config.minUserMessages) {
+  if (!digest.turns.some((turn) => !turn.contextOnly) || (!job.force && (humanMessages === 0 || humanMessages < config.minUserMessages))) {
     log(`skipped: ${humanMessages} human messages, fewer than ${config.minUserMessages}`);
     return finish("skipped");
   }
@@ -313,6 +315,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   );
 
   const extraction: ExtractionEvent = {
+    trigger: job.trigger ?? "shutdown", endEntryId: job.endEntryId,
     session: sessionId, ts: now.toISOString(), model: config.writerModel ?? "pi default",
     candidates: [], dropped: [], votes: [],
   };
@@ -338,6 +341,12 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
     log(`pass 1 rejected: ${pass1.error}`);
     return finish("failed", `pass 1 rejected: ${pass1.error}`);
   }
+  const priorVotes = readHistory(config.stateDir, "votes").filter((vote) => vote.session === sessionId);
+  pass1.votes = pass1.votes.filter((vote, index) => {
+    if (!priorVotes.some((prior) => prior.topic === vote.topic && prior.id === vote.id && prior.kind === vote.kind)) return true;
+    pass1.rejected.push({ type: "vote", index, value: vote, reason: "vote already recorded for this memory and session" });
+    return false;
+  });
   extraction.candidates = pass1.candidates;
   extraction.votes = pass1.votes;
   extraction.dropped = pass1.rejected;

@@ -545,3 +545,44 @@ test("archived injections expose topics to writer votes even without a skill rea
   await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
   assert.ok(readHistory(fixture.config.stateDir, "votes").some((event) => event.topic === "mem-any-testing" && event.kind === "applied"));
 });
+
+test("bounded jobs consume only new turns, keep prior assistant context and do not repeat session votes", async () => {
+  const fixture = setup({ minUserMessages: 1, autoCommit: false, staleTopicDays: 10000 });
+  const prompts: string[] = [];
+  const model: ModelRunner = async (prompt) => {
+    prompts.push(prompt);
+    return JSON.stringify({ candidates: [], votes: [{ topic: "mem-any-testing", id: "r1", kind: "confirmed" }] });
+  };
+  const deps = { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root };
+  const first = await runJob(writeJob(job(fixture, { endEntryId: "e5", trigger: "compaction" })), deps);
+  assert.equal(first.outcome, "ok");
+  assert.match(prompts[0]!, /Add a test for the parser/);
+  assert.doesNotMatch(prompts[0]!, /No, I said node:test/);
+  const second = await runJob(writeJob(job(fixture, { endEntryId: "e9", trigger: "shutdown" })), deps);
+  assert.equal(second.outcome, "nothing");
+  assert.doesNotMatch(prompts[1]!, /Add a test for the parser/);
+  assert.match(prompts[1]!, /Previous assistant context/);
+  assert.match(prompts[1]!, /Added test\/parser.test.ts using vitest/);
+  assert.match(prompts[1]!, /No, I said node:test/);
+  assert.match(prompts[1]!, /mem-any-testing/);
+  assert.equal(readHistory(fixture.config.stateDir, "votes").length, 1);
+  assert.deepEqual(readHistory(fixture.config.stateDir, "extractions").map((event) => event.trigger), ["compaction", "shutdown"]);
+  await runJob(writeJob(job(fixture, { endEntryId: "e9", trigger: "manual", force: true })), deps);
+  assert.equal(prompts.length, 2);
+  await runJob(writeJob(job(fixture, { endEntryId: "e3", trigger: "compaction", force: true })), deps);
+  assert.equal(prompts.length, 2);
+});
+
+test("a failed bounded pass leaves its turns available to a later job", async () => {
+  const fixture = setup({ minUserMessages: 1, autoCommit: false });
+  const failed = await runJob(writeJob(job(fixture, { endEntryId: "e5", trigger: "compaction" })), {
+    model: async () => { throw new Error("offline"); }, resolver: fakeResolver({}),
+  });
+  assert.equal(failed.outcome, "failed");
+  let prompt = "";
+  await runJob(writeJob(job(fixture, { endEntryId: "e9", trigger: "shutdown" })), {
+    model: async (value) => { prompt = value; return '{"candidates":[],"votes":[]}'; }, resolver: fakeResolver({}),
+  });
+  assert.match(prompt, /Add a test for the parser/);
+  assert.match(prompt, /No, I said node:test/);
+});
