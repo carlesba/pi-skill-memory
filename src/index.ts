@@ -48,6 +48,7 @@ import {
 } from "./review.ts";
 import { readSkillIndex, skillIndexRoots } from "./skill-index.ts";
 import { listTopics, topicsForRepo, type TopicSummary } from "./topics.ts";
+import { runSelector, selectedTopics, selectorPrompt, topicDelivery, type SelectorRunner } from "./selector.ts";
 import { appendUsageEvent } from "./usage.ts";
 import { isInside } from "./writer/confine.ts";
 import { enqueueWriter, findOnPath, type EnqueueResult, type Which } from "./writer/enqueue.ts";
@@ -65,6 +66,7 @@ export const SUBCOMMANDS = ["status", "explain", "write", "stats"] as const;
 export const PROPOSALS_COMMAND = "proposals";
 
 export interface ExtensionDeps {
+  select: SelectorRunner;
   resolver: RepoResolver;
   enqueue: (job: QueuedJob) => EnqueueResult;
   now: () => Date;
@@ -80,6 +82,11 @@ interface SessionState {
   sessionId: string;
   userMemory: string | null;
   topics: TopicSummary[];
+  repos: Set<string>;
+  selection?: { controller: AbortController; ready: TopicSummary[]; timer: ReturnType<typeof setTimeout> };
+  previousAssistant: string;
+  pointed: Set<string>;
+  contextMemory: string[];
   announced: Set<string>;
   pending: Map<string, string[]>;
   reminders: ReminderRecord[];
@@ -128,6 +135,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
   return function piSkillMemory(pi: ExtensionAPI): void {
     const which = overrides.which ?? findOnPath;
     const deps: ExtensionDeps = {
+      select: overrides.select ?? runSelector,
       resolver: overrides.resolver ?? createRepoResolver(),
       enqueue: overrides.enqueue ?? ((job) => enqueueWriter(job, { which })),
       now: overrides.now ?? (() => new Date()),
@@ -142,11 +150,17 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
 
     function startSession(ctx: SessionView): SessionState {
       const config = resolveConfig(pi.getSettings(), { env: deps.env, home: deps.home });
+      cancelSelection();
       state = {
         config,
         sessionId: ctx.sessionManager.getSessionId(),
         userMemory: readUserMemory(config.dir),
         topics: listTopics(config.dir),
+        repos: new Set(),
+        previousAssistant: ctx.sessionManager.getBranch().flatMap((entry) =>
+          entry.type === "message" && entry.message.role === "assistant" ? [messageText(entry.message.content)] : []).at(-1)?.slice(-2000) ?? "",
+        pointed: new Set(),
+        contextMemory: [],
         announced: new Set(),
         pending: new Map(),
         reminders: [],
@@ -176,6 +190,8 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
     }
 
     function announce(session: SessionState, identity: string, trigger: string): string | null {
+      session.repos.add(identity);
+      if (!session.config.reminders) return null;
       if (session.announced.has(identity)) return null;
       const names = reminderTopics(session.topics, identity);
       if (names.length === 0) return null;
@@ -183,6 +199,46 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       session.reminders.push({ repo: identity, topics: names, trigger });
       for (const name of names) recordUsage(session, "reminded", name);
       return reminderLine(identity, names, session.config.dir);
+    }
+
+    function cancelSelection(): void {
+      if (!state?.selection) return;
+      clearTimeout(state.selection.timer);
+      state.selection.controller.abort();
+      state.selection = undefined;
+    }
+
+    function beginSelection(session: SessionState, prompt: string, ctx: ExtensionContext): void {
+      cancelSelection();
+      if (!session.config.selector.enabled) return;
+      const identity = deps.resolver.resolvePath(ctx.cwd)?.identity;
+      if (identity) session.repos.add(identity);
+      for (const match of promptNamedRepos(prompt, knownRepoIdentities(session.topics))) session.repos.add(match.identity);
+      const candidates = session.topics.filter((topic) =>
+        (topic.scope === "generic" || session.repos.has(topic.scope.slice(5))) &&
+        !session.loaded.has(topic.name) && !session.pointed.has(topic.name));
+      if (candidates.length === 0) return;
+      const controller = new AbortController();
+      const selection = { controller, ready: [] as TopicSummary[], timer: setTimeout(() => {
+        if (state === session && session.selection === selection) {
+          logFailure("selector", new Error("Selection timed out"));
+          cancelSelection();
+        }
+      }, session.config.selector.timeoutMs) };
+      session.selection = selection;
+      void deps.select(selectorPrompt(prompt, session.previousAssistant, candidates), ctx, session.config, controller.signal)
+        .then((output) => {
+          if (state !== session || session.selection !== selection || controller.signal.aborted) return;
+          selection.ready = selectedTopics(output, candidates);
+          clearTimeout(selection.timer);
+          for (const topic of selection.ready) appendUsageEvent(session.config.stateDir, {
+            ts: deps.now().toISOString(), kind: "selected", topic: topic.name, session: session.sessionId, mode: session.config.selector.mode,
+          });
+        }).catch((error) => {
+          if (state !== session || session.selection !== selection) return;
+          logFailure("selector", error);
+          cancelSelection();
+        });
     }
 
     function buildJob(session: SessionState, ctx: SessionView, sessionFile: string, force: boolean): WriterJob {
@@ -356,17 +412,58 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       }
     });
 
+    pi.on("message_end", (event) => {
+      if (state && event.message.role === "assistant") state.previousAssistant = messageText(event.message.content).slice(-2000);
+    });
+
+    pi.on("context", (event) => {
+      if (!state) return;
+      const session = state;
+      let remaining = session.config.selector.maxChars;
+      let delivered = 0;
+      const ready = session.selection?.ready.splice(0) ?? [];
+      for (const topic of ready) {
+        if (session.loaded.has(topic.name) || session.pointed.has(topic.name)) continue;
+        try {
+          const separatorChars = delivered > 0 ? 2 : 0;
+          const text = topicDelivery(topic, session.config.selector.mode, remaining - separatorChars);
+          if (!text) continue;
+          remaining -= text.length + separatorChars;
+          delivered++;
+          session.contextMemory.push(text);
+          if (session.config.selector.mode === "inject") session.loaded.add(topic.name);
+          else session.pointed.add(topic.name);
+          appendUsageEvent(session.config.stateDir, {
+            ts: deps.now().toISOString(), kind: "injected", topic: topic.name, session: session.sessionId, mode: session.config.selector.mode,
+          });
+        } catch (error) { logFailure("selector delivery", error); }
+      }
+      if (session.contextMemory.length === 0) return;
+      return { messages: [...event.messages, {
+        role: "custom" as const, customType: "pi-skill-memory-selection", content: session.contextMemory.join("\n\n"),
+        display: false, timestamp: deps.now().getTime(),
+      }] };
+    });
+
+    pi.on("agent_end", cancelSelection);
+
     pi.on("agent_settled", () => {
+      cancelSelection();
       if (state) state.pendingInputs.length = 0;
     });
 
     pi.on("session_compact", () => {
+      cancelSelection();
       state?.announced.clear();
+      state?.loaded.clear();
+      state?.pointed.clear();
+      if (state) state.contextMemory = [];
     });
 
     pi.on("before_agent_start", (event: BeforeAgentStartEvent, ctx): BeforeAgentStartEventResult | undefined => {
       try {
         const session = current(ctx);
+        beginSelection(session, event.prompt, ctx);
         if (session.userMemory) {
           event.systemPromptOptions.sections = {
             ...event.systemPromptOptions.sections,
@@ -400,6 +497,7 @@ export function createExtension(overrides: Partial<ExtensionDeps> = {}): (pi: Ex
       } catch (error) {
         logFailure("session_shutdown", error);
       } finally {
+        cancelSelection();
         state = null;
       }
     });

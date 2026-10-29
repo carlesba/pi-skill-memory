@@ -98,3 +98,15 @@ test("distinct usage events with identical fields survive separate folds", () =>
   foldUsageLog(stateDir, () => {});
   assert.equal(readHistory(stateDir, "usage").length, 2);
 });
+
+test("selector events retain mode in history and only rule injection qualifies for writer votes", () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "psm-selector-usage-"));
+  appendUsageEvent(stateDir, { ...event("selected", "mem-selected", "s1", "2026-10-29"), mode: "inject" });
+  appendUsageEvent(stateDir, { ...event("injected", "mem-injected", "s1", "2026-10-29"), mode: "inject" });
+  appendUsageEvent(stateDir, { ...event("injected", "mem-pointed", "s1", "2026-10-29"), mode: "point" });
+  const ledger = emptyLedger();
+  const folded = foldUsageLog(stateDir, (events) => foldEventsIntoLedgers(events, () => ledger));
+  assert.deepEqual(topicsLoadedInSession(folded, "s1"), ["mem-injected"]);
+  assert.equal(ledger.topic.votes.length, 0);
+  assert.deepEqual(readHistory(stateDir, "usage").map((event) => event.mode), ["inject", "inject", "point"]);
+});

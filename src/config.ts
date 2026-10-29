@@ -8,6 +8,9 @@ export interface MemoryConfig {
   agentDir: string;
   dir: string;
   stateDir: string;
+  selectorModel: string;
+  selector: { enabled: boolean; mode: "inject" | "point"; timeoutMs: number; maxChars: number };
+  reminders: boolean;
   writerModel: string | undefined;
   writerExtensions: string[];
   runner: RunnerKind;
@@ -113,7 +116,16 @@ export function resolveConfig(settings: unknown, environment: ConfigEnvironment 
   const learnFromSources = Array.isArray(memory.learnFromSources)
     ? [...new Set(memory.learnFromSources.filter(isInputSource))]
     : [...DEFAULT_LEARN_FROM_SOURCES];
+  const selector = isRecord(memory.selector) ? memory.selector : {};
   return {
+    selectorModel: nonEmptyString(memory.selectorModel) ?? "tier/fast",
+    selector: {
+      enabled: typeof selector.enabled === "boolean" ? selector.enabled : true,
+      mode: selector.mode === "point" ? "point" : "inject",
+      timeoutMs: nonNegativeNumber(selector.timeoutMs, 5000),
+      maxChars: nonNegativeNumber(selector.maxChars, 3000),
+    },
+    reminders: typeof memory.reminders === "boolean" ? memory.reminders : true,
     agentDir,
     dir: dirSetting ? resolveSettingPath(dirSetting, home, agentDir) : join(agentDir, "memory"),
     stateDir: stateDirSetting ? resolveSettingPath(stateDirSetting, home, agentDir) : resolveDefaultStateDir(environment),

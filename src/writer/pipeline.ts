@@ -13,7 +13,7 @@ import {
   sweepLedger,
   type Ledger,
 } from "../ledger.ts";
-import { appendHistory, type ExtractionEvent } from "../history.ts";
+import { readHistory, appendHistory, type ExtractionEvent } from "../history.ts";
 import type { RepoResolver } from "../repo.ts";
 import { readSkillIndex, skillIndexRoots } from "../skill-index.ts";
 import {
@@ -29,7 +29,7 @@ import {
   type Memory,
   type Scope,
 } from "../topics.ts";
-import { foldEventsIntoLedgers, foldUsageLog, readUsageEvents, topicsLoadedInSession, type FoldOptions } from "../usage.ts";
+import { foldEventsIntoLedgers, foldUsageLog, parseUsageLog, readUsageEvents, topicsLoadedInSession, type FoldOptions } from "../usage.ts";
 import {
   closestTopic,
   isScopeAtCap,
@@ -290,7 +290,7 @@ export async function runPipeline(job: WriterJob, deps: PipelineDeps): Promise<P
   }
 
   const loadedNames = new Set(
-    [...topicsLoadedInSession([...folded, ...readUsageEvents(config.stateDir)], sessionId), ...digest.memoryReads].filter((name) =>
+    [...topicsLoadedInSession([...readHistory(config.stateDir, "usage").flatMap((event) => parseUsageLog(JSON.stringify(event))), ...folded, ...readUsageEvents(config.stateDir)], sessionId), ...digest.memoryReads].filter((name) =>
       topics.has(name),
     ),
   );

@@ -50,8 +50,8 @@ test("stats combines full history, pending usage and capped legacy ledgers witho
   const output = formatStats(config, "2026-10-29");
   assert.match(output, /Sessions in window: 4 known/);
   assert.match(output, /0 ledger-only events/);
-  assert.match(output, /mem-any-tests\s+1\s+30\s+1\s+0\s+0\s+0\s+0/);
-  assert.match(output, /user.md\s+0\s+0\s+0\s+0\s+0\s+0\s+1/);
+  assert.match(output, /mem-any-tests\s+1\s+30\s+0\s+0\s+1\s+0\s+0\s+0\s+0/);
+  assert.match(output, /user.md\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+0\s+1/);
   assert.match(output, /Topics never loaded in window: mem-gone/);
   assert.match(output, /ok\s+1/);
   assert.doesNotMatch(output, /failed\s+1/);
@@ -59,7 +59,7 @@ test("stats combines full history, pending usage and capped legacy ledgers witho
   assert.match(output, /Votes dropped: 1/);
   const allTime = formatStats(config);
   assert.match(allTime, /2 ledger-only events \(capped, incomplete history\)/);
-  assert.match(allTime, /mem-any-tests\s+2\s+30\s+1\s+1/);
+  assert.match(allTime, /mem-any-tests\s+2\s+30\s+0\s+0\s+1\s+1/);
   assert.match(allTime, /Pass-1 validation failures: 1/);
   assert.deepEqual(snapshot(root), before);
 });
@@ -73,4 +73,17 @@ test("stats handles empty stores without creating directories and validates date
   for (const args of [["--since"], ["--since", "2025-02-29"], ["--until", "2025-01-01"], ["--since", "2025-01-01", "extra"]]) {
     assert.throws(() => parseStatsArgs(args), /usage: stats/);
   }
+});
+
+test("stats counts selected and injected and matches later applied votes in the same session", () => {
+  const root = mkdtempSync(join(tmpdir(), "psm-conversion-"));
+  const config = { dir: join(root, "memory"), stateDir: join(root, "state") };
+  for (const session of ["used", "unused"]) {
+    appendUsageEvent(config.stateDir, { topic: "mem-test", kind: "selected", session, ts: "2026-10-29T10:00:00Z", mode: "inject" });
+    appendUsageEvent(config.stateDir, { topic: "mem-test", kind: "injected", session, ts: "2026-10-29T10:00:01Z", mode: "inject" });
+  }
+  appendHistory(config.stateDir, "votes", { topic: "mem-test", id: "r1", kind: "applied", session: "used", ts: "2026-10-29T11:00:00Z" });
+  appendHistory(config.stateDir, "votes", { topic: "mem-test", id: "r2", kind: "applied", session: "unused", ts: "2026-10-28T11:00:00Z" });
+  assert.match(formatStats(config), /mem-test\s+0\s+0\s+2\s+2\s+2/);
+  assert.match(formatStats(config), /Selected topic\/session pairs later applied: 1\/2/);
 });

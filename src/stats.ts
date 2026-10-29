@@ -5,7 +5,7 @@ import { readHistory, readJsonLines } from "./history.ts";
 import { loadLedger } from "./ledger.ts";
 import { listTopics } from "./topics.ts";
 
-const KINDS = ["reminded", "loaded", "applied", "confirmed", "ignored", "contradicted", "retracted"] as const;
+const KINDS = ["reminded", "loaded", "selected", "injected", "applied", "confirmed", "ignored", "contradicted", "retracted"] as const;
 type CountKind = typeof KINDS[number];
 interface CountEvent {
   topic: string;
@@ -107,12 +107,22 @@ export function formatStats(config: Pick<MemoryConfig, "dir" | "stateDir">, sinc
       reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
     }
   }
+  const selectedPairs = new Map<string, CountEvent>();
+  for (const event of events) {
+    if (event.kind !== "selected" || !event.session) continue;
+    const key = JSON.stringify([event.topic, event.session]);
+    const previous = selectedPairs.get(key);
+    if (!previous || event.ts < previous.ts) selectedPairs.set(key, event);
+  }
+  const appliedSelections = [...selectedPairs.values()].filter((selection) => events.some((event) =>
+    event.kind === "applied" && event.topic === selection.topic && event.session === selection.session && event.ts >= selection.ts)).length;
   const neverLoaded = names.filter((name) => totals(name)[1] === 0);
   return [
     `Memory stats (${since ? `since ${since}, UTC inclusive` : "all time"})`,
     `Sessions in window: ${sessions.size} known (legacy ledgers have no session ids)`,
     `Sources: history + pending usage; ${legacy.length} ledger-only events (capped, incomplete history).`,
     "", table(rows), "", `Topics never loaded in window: ${neverLoaded.length ? neverLoaded.join(", ") : "none"}`,
+    `Selected topic/session pairs later applied: ${appliedSelections}/${selectedPairs.size} (same session, at or after selection)`,
     "", "Writer runs by outcome:",
     outcomes.size ? table([["outcome", "runs"], ...[...outcomes].sort().map(([kind, count]) => [kind, String(count)])]) : "none",
     `Pass-1 validation failures: ${runs.filter((run) => typeof run.error === "string" && run.error.startsWith("pass 1 rejected:")).length}`,

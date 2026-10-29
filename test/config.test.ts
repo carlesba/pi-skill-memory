@@ -75,3 +75,14 @@ test("skipWrite fires on any configured env var and on none by default", () => {
   assert.equal(shouldSkipWrite(config, { MY_JOB: "a1" }), true);
   assert.equal(shouldSkipWrite(config, { MY_BOT: "" }), false);
 });
+
+test("selector defaults and explicit overrides stay under the memory key", () => {
+  const defaults = resolveConfig({});
+  assert.equal(defaults.selectorModel, "tier/fast");
+  assert.equal(defaults.reminders, true);
+  assert.deepEqual(defaults.selector, { enabled: true, mode: "inject", timeoutMs: 5000, maxChars: 3000 });
+  const configured = resolveConfig({ memory: { selectorModel: "provider/model", reminders: false, selector: { enabled: false, mode: "point", timeoutMs: 12, maxChars: 80 } } });
+  assert.equal(configured.selectorModel, "provider/model");
+  assert.equal(configured.reminders, false);
+  assert.deepEqual(configured.selector, { enabled: false, mode: "point", timeoutMs: 12, maxChars: 80 });
+});

@@ -535,3 +535,13 @@ test("vote and extraction history outlive ledger caps", async () => {
   assert.equal(readHistory(fixture.config.stateDir, "votes").length, 25);
   assert.equal(readHistory(fixture.config.stateDir, "extractions").length, 25);
 });
+
+test("archived injections expose topics to writer votes even without a skill read", async () => {
+  const fixture = setup({ autoCommit: false });
+  writeFileSync(fixture.sessionFile, readFileSync(fixture.sessionFile, "utf8").replaceAll("mem-any-testing/SKILL.md", "unrelated/SKILL.md"));
+  const { appendHistory } = await import("../src/history.ts");
+  appendHistory(fixture.config.stateDir, "usage", { topic: "mem-any-testing", kind: "injected", mode: "inject", session: "sess-1", ts: "2025-03-01T10:00:00.000Z" });
+  const { model } = scriptedModel({ extract: { candidates: [], votes: [{ topic: "mem-any-testing", id: "r1", kind: "applied" }] }, merges: {} });
+  await runPipeline(job(fixture), { model, now: () => NOW, resolver: fakeResolver({}), home: fixture.root });
+  assert.ok(readHistory(fixture.config.stateDir, "votes").some((event) => event.topic === "mem-any-testing" && event.kind === "applied"));
+});

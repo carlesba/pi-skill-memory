@@ -7,7 +7,8 @@ import { recordTopicVote, TOPIC_VOTE_KINDS, type Ledger, type TopicVoteKind } fr
 export interface UsageEvent {
   eventId?: string;
   ts: string;
-  kind: TopicVoteKind;
+  kind: TopicVoteKind | "selected" | "injected";
+  mode?: "inject" | "point";
   topic: string;
   session: string;
 }
@@ -37,7 +38,7 @@ function isUsageEvent(value: unknown): value is UsageEvent {
     typeof record.ts === "string" &&
     typeof record.topic === "string" &&
     typeof record.session === "string" &&
-    TOPIC_VOTE_KINDS.includes(record.kind as TopicVoteKind)
+    [...TOPIC_VOTE_KINDS, "selected", "injected"].includes(record.kind as TopicVoteKind)
   );
 }
 
@@ -49,6 +50,7 @@ export function parseUsageLog(raw: string): UsageEvent[] {
       const value: unknown = JSON.parse(line);
       if (isUsageEvent(value)) {
         events.push({ ts: value.ts, kind: value.kind, topic: value.topic, session: value.session,
+          ...(value.mode === "inject" || value.mode === "point" ? { mode: value.mode } : {}),
           ...(typeof value.eventId === "string" ? { eventId: value.eventId } : {}) });
       }
     } catch {
@@ -142,6 +144,7 @@ export function foldEventsIntoLedgers(events: UsageEvent[], ledgerFor: (topic: s
   for (const event of ordered) {
     const ledger = ledgerFor(event.topic);
     if (!ledger) continue;
+    if (event.kind === "selected" || event.kind === "injected") continue;
     recordTopicVote(ledger, event.kind, event.ts);
     touched.add(event.topic);
   }
@@ -149,5 +152,5 @@ export function foldEventsIntoLedgers(events: UsageEvent[], ledgerFor: (topic: s
 }
 
 export function topicsLoadedInSession(events: UsageEvent[], session: string): string[] {
-  return [...new Set(events.filter((event) => event.session === session && event.kind === "loaded").map((event) => event.topic))];
+  return [...new Set(events.filter((event) => event.session === session && (event.kind === "loaded" || (event.kind === "injected" && event.mode === "inject"))).map((event) => event.topic))];
 }

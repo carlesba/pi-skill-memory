@@ -189,9 +189,12 @@ test("the default export registers every handler and the memory command without 
   assert.deepEqual(
     [...events].sort(),
     [
+      "agent_end",
       "agent_settled",
       "before_agent_start",
+      "context",
       "input",
+      "message_end",
       "message_start",
       "resources_discover",
       "session_compact",
@@ -651,4 +654,114 @@ test("/memory stats reports the selected window without queuing a writer", async
   assert.match(await h.command("stats --since 2026-10-29"), /Memory stats \(since 2026-10-29, UTC inclusive\)/);
   assert.match(await h.command("stats --since 2026-02-30"), /usage: stats/);
   assert.deepEqual(h.jobs, []);
+});
+
+test("selector never waits for completion and delivers once ready without changing the system prefix", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  let resolveSelection!: (value: string) => void;
+  let prompt = "";
+  const h = harness(fixture, { deps: { select: (input) => {
+    prompt = input;
+    return new Promise((resolve) => { resolveSelection = resolve; });
+  } } });
+  await h.fire("session_start", {});
+  await h.fire("message_end", { message: { role: "assistant", content: [{ type: "text", text: "previous answer" }] } });
+  const systemPromptOptions = { sections: {} };
+  await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions });
+  assert.deepEqual(systemPromptOptions, { sections: {} });
+  assert.match(prompt, /previous answer/);
+  assert.match(prompt, /mem-apollo-state/);
+  assert.doesNotMatch(prompt, /mem-billing-db/);
+  assert.equal(await h.fire("context", { messages: [] }), undefined);
+  resolveSelection('["mem-apollo-state","unknown","mem-apollo-state"]');
+  await new Promise((resolve) => setImmediate(resolve));
+  const result = await h.fire("context", { messages: [] }) as { messages: { content: string }[] };
+  assert.match(result.messages[0].content, /A memory in mem-apollo-state/);
+  await h.fire("context", { messages: [] });
+  assert.deepEqual(readUsageEvents(fixture.stateDir).filter((event) => event.kind !== "reminded").map((event) => event.kind), ["selected", "injected"]);
+  await h.fire("agent_end", {});
+});
+
+test("selector filters touched and named repos, loaded topics and clears deduplication after compaction", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const prompts: string[] = [];
+  const h = harness(fixture, { memory: { reminders: false }, deps: { select: async (prompt) => {
+    prompts.push(prompt);
+    return '["mem-billing-db"]';
+  } } });
+  await h.toolRound("touch", "read", { path: "/work/ui/file" });
+  await h.fire("before_agent_start", { prompt: "billing change", systemPromptOptions: {} });
+  assert.match(prompts[0], /mem-ui-tokens/);
+  assert.match(prompts[0], /mem-billing-db/);
+  await h.fire("context", { messages: [] });
+  await h.fire("before_agent_start", { prompt: "again", systemPromptOptions: {} });
+  assert.doesNotMatch(prompts[1], /mem-billing-db/);
+  await h.fire("session_compact", {});
+  await h.fire("before_agent_start", { prompt: "again", systemPromptOptions: {} });
+  assert.match(prompts[2], /mem-billing-db/);
+  assert.equal(readUsageEvents(fixture.stateDir).some((event) => event.kind === "reminded"), false);
+  await h.fire("agent_end", {});
+});
+
+test("late selections are discarded after end, replacement, compaction and timeout", async () => {
+  for (const boundary of ["agent_end", "session_start", "session_compact", "timeout"]) {
+    const fixture = makeFixture(STANDARD_TOPICS);
+    let finish!: (value: string) => void;
+    let signal!: AbortSignal;
+    const h = harness(fixture, { memory: { selector: { timeoutMs: 5 } }, deps: { select: (_prompt, _ctx, _config, abort) => {
+      signal = abort;
+      return new Promise((resolve) => { finish = resolve; });
+    } } });
+    await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+    if (boundary === "timeout") await new Promise((resolve) => setTimeout(resolve, 15));
+    else await h.fire(boundary, {});
+    assert.equal(signal.aborted, true);
+    finish('["mem-apollo-state"]');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(await h.fire("context", { messages: [] }), undefined);
+    assert.equal(readUsageEvents(fixture.stateDir).some((event) => event.kind === "selected"), false);
+  }
+});
+
+test("selector point mode names files without rules and disabled selector never invokes a model", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  const h = harness(fixture, { memory: { selector: { mode: "point" } }, deps: { select: async () => '["mem-apollo-state"]' } });
+  await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+  const result = await h.fire("context", { messages: [] }) as { messages: { content: string }[] };
+  assert.match(result.messages[0].content, /Read .*SKILL.md before acting/);
+  assert.doesNotMatch(result.messages[0].content, /A memory in/);
+  assert.equal(readUsageEvents(fixture.stateDir).find((event) => event.kind === "injected")?.mode, "point");
+  await h.fire("agent_end", {});
+  const disabled = harness(makeFixture(STANDARD_TOPICS), { memory: { selector: { enabled: false } }, deps: { select: async () => { assert.fail("disabled selector ran"); } } });
+  await disabled.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+  assert.equal(await disabled.fire("context", { messages: [] }), undefined);
+});
+
+test("selector bounds injected context and silently rejects malformed model answers", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  let output = '["mem-apollo-state","mem-apollo-abstractions"]';
+  const h = harness(fixture, { memory: { selector: { maxChars: 170 } }, deps: { select: async () => output } });
+  await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+  const result = await h.fire("context", { messages: [] }) as { messages: { content: string }[] };
+  assert.ok(result.messages[0].content.length <= 170);
+  assert.doesNotMatch(result.messages[0].content, /metadata:/);
+  await h.fire("session_compact", {});
+  output = '{"topics": []}';
+  await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await h.fire("context", { messages: [] }), undefined);
+  assert.deepEqual(h.notes, []);
+});
+
+test("a skill read while selection runs suppresses its rule injection", async () => {
+  const fixture = makeFixture(STANDARD_TOPICS);
+  let finish!: (value: string) => void;
+  const h = harness(fixture, { deps: { select: () => new Promise((resolve) => { finish = resolve; }) } });
+  await h.fire("before_agent_start", { prompt: "change state", systemPromptOptions: {} });
+  await h.toolRound("read-memory", "read", { path: topicSkillPath(fixture.dir, "mem-apollo-state") });
+  finish('["mem-apollo-state"]');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(await h.fire("context", { messages: [] }), undefined);
+  assert.equal(readUsageEvents(fixture.stateDir).some((event) => event.kind === "injected"), false);
+  await h.fire("agent_end", {});
 });

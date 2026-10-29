@@ -79,22 +79,47 @@ Record each change to the extension with its hypothesis, the metric that will ju
 - Review on: 2026-11-19
 - Outcome (filled at review): pending
 
+## D-006 — Select relevant topics at turn start
+
+- ID: D-006
+- Date: 2026-10-29
+- Decision: Start a nonblocking topic selector at each user turn and deliver ready selections through the per-model-call context hook, using rule injection by default and optional file pointers. Keep repo-wide reminders enabled by default but independently configurable.
+- Why: Real sessions loaded only 3 of 29 relevant topics, while explicit selection with current descriptions found 23–25 of 29. The agent recognises relevance when asked but does not reliably stop to select skills during work.
+- Hypothesis: Topic usage (loaded plus rule-injected per relevant session) and applied votes on topic memories rise well above D-001 without more contradicted votes.
+- Metric(s) and how to read them with `pi-memory stats`: Run `pi-memory stats --since 2026-10-29` for selected, injected, loaded, applied and contradicted columns and the selected topic/session pairs later applied ratio. The ratio requires a vote at or after selection in the same session and includes undelivered selections in its denominator. History retains delivery mode; point-mode injections are pointers, not rule loads. Relevance still requires a separate recall audit, and stats cannot attribute causality or model cost.
+- Baseline: D-001 recorded 12 loads, 9 of 25 topics ever loaded and 1 topic-memory vote in three weeks. The 20-session audit found 3/29 relevant loads (10.3% recall); explicit selection found 23/29 with Opus and 25/29 with Astra (79–86% recall, 63%/57% precision). No selector or injection events existed before this change.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending. Short turns may end before delivery; false positives and truncated rules require review alongside applied and contradicted votes.
+
+## D-007 — Keep current descriptions
+
+- ID: D-007
+- Date: 2026-10-29
+- Decision: Do not rewrite topic descriptions as a recall intervention now; keep the existing writer description behaviour unchanged.
+- Why: The v2 simulation showed no consistent recall gain from rewrites. Current descriptions already selected 23/29 relevant topics with Opus and 25/29 with Astra; the best in-sample rewrite gained only one hit with each selector, while other rewrites lost hits.
+- Hypothesis: Explicit selection improves real usage more than a description rewrite, so leaving descriptions alone avoids an unsupported intervention while D-006 is evaluated.
+- Metric(s) and how to read them with `pi-memory stats`: Track loaded, injected, applied and contradicted counts with `pi-memory stats --since 2026-10-29` during D-006. Stats cannot measure description quality or recall directly; compare any future wording proposal with a fresh blinded relevance audit before changing this decision.
+- Baseline: V2 used 29 positive and 10 negative moments. Opus current descriptions: 79% recall, 63% precision; rewrites: 69–83% recall, 58–67% precision. Astra current descriptions: 86% recall, 57% precision; the best in-sample set: 90% recall, 62% precision. Single draws, imperfect oracle labels and in-sample selection do not establish a wording benefit.
+- Review on: 2026-11-19
+- Outcome (filled at review): Pending.
+
 ## Data we keep and why
 
 | File | Decisions supported |
 | --- | --- |
-| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005: the actual memories, descriptions, and scope whose utility we judge. |
+| Memory directory `user.md`, `memory-skills/<topic>/SKILL.md` | D-001, D-004, D-005, D-006, D-007: the actual memories, descriptions, and scope whose utility we judge. |
 | Memory directory `user.ledger.json`, `memory-skills/<topic>/ledger.json` | D-001, D-002: capped baseline fallback and live weights/eviction, not full measurement history. |
 | Memory directory `proposals.md` | D-004: lessons routed to hand-written skills rather than automatic memory writes. |
-| State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
-| State `history/usage-YYYY-MM.jsonl` | D-002, D-005: append-only reminded/loaded events with session and timestamp, retained even when a topic disappears. |
+| State `usage.jsonl`, `usage.<pid>.folding.jsonl` | D-002, D-005, D-006: pending usage, including folds interrupted before removal; stats reads these without claiming or folding them. |
+| State `history/usage-YYYY-MM.jsonl` | D-002, D-005, D-006: append-only reminded/loaded/selected/injected events with session, timestamp and selector delivery mode, retained even when a topic disappears. |
 | State `history/votes-YYYY-MM.jsonl` | D-002, D-003, D-004: every applied writer vote with topic, memory id, kind, session, and timestamp, including retractions. |
 | State `history/extractions-YYYY-MM.jsonl` | D-002, D-003, D-004: each attempted pass-1 result, configured model (or pi default), kept candidates, dropped candidates/votes with raw item and reason, accepted votes, and structural/model errors. |
 | State `runs.jsonl` | D-001, D-003, D-004: writer outcomes and failures; proposal apply records remain separate from writer counts. |
-| State `writer.log` | D-003, D-004: operational failure context, such as authentication or model selection errors. |
+| State `writer.log` | D-003, D-004, D-006: operational failure context, including silent selector failures and timeouts, such as authentication or model selection errors. |
 | State `jobs/*.json` | D-004: queued/retryable inputs for operational diagnosis, not a permanent outcome history. |
 | State `proposals-state.json` | D-004: approval, retry, and failure context for lessons sent to hand-written skills. |
 | State `evals/2026-10-29-model-tiers/` | D-004, D-005: offline model replays and recall audit artifacts, read separately from production stats. |
+| State `evals/2026-10-29-v2-all-tiers/` | D-004, D-005, D-006, D-007: read-only model and description-selection evidence; not production stats. |
 | Memory directory `.writer.lock` | D-002: transient serialization of writer mutations, not measurement data. |
 
 History contains lesson text and evidence quotes, so it is sensitive like the source transcripts. No automatic retention or pruning is applied; deleting history reduces future measurement fidelity. Existing lost events cannot be recovered, and legacy session counts are unknown.
@@ -103,4 +128,4 @@ History contains lesson text and evidence quotes, so it is sensitive like the so
 
 - Before-compaction flush.
 - Episodic `## Examples` in topics.
-- Recall changes depending on D-005.
+- Audit D-006 selected-to-applied conversion and relevant-session usage before revisiting D-007 descriptions; investigate short-turn misses and false-positive selections.
